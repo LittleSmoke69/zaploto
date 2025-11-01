@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useRequireAuth } from '@/utils/useRequireAuth';
 import {
   Send,
@@ -38,11 +38,12 @@ interface Contact {
 interface WhatsAppInstance {
   id?: string;
   instance_name: string;
-  status: string; // 'connecting' | 'connected' | etc
+  status: string; // 'connecting' | 'connected' | 'disconnected' | 'unknown'
   hash?: string;
   number?: string;
   qr_code?: string | null;
   connected_at?: string | null;
+  user_id?: string;
 }
 
 interface Toast {
@@ -74,55 +75,88 @@ type DistributionMode = 'sequential' | 'random';
 
 const EVOLUTION_BASE = process.env.NEXT_PUBLIC_EVOLUTION_BASE!;
 const EVOLUTION_APIKEY = process.env.NEXT_PUBLIC_EVOLUTION_APIKEY!;
-
+const QR_WINDOW_SECONDS = 30;
 
 const Dashboard = () => {
   const { checking } = useRequireAuth();
 
-  // Instância WhatsApp
+  // ======== MULTI-TENANT ========
+  const [userId, setUserId] = useState<string | null>(null);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const id =
+      sessionStorage.getItem('user_id') ||
+      sessionStorage.getItem('profile_id') ||
+      window.localStorage.getItem('profile_id');
+    setUserId(id);
+  }, []);
+
+  // Instâncias
   const [instanceName, setInstanceName] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [instances, setInstances] = useState<WhatsAppInstance[]>([]);
   const [selectedInstance, setSelectedInstance] = useState('');
+
+  // QR
   const [qrCode, setQrCode] = useState('');
   const [qrTimer, setQrTimer] = useState(0);
+  const [qrExpired, setQrExpired] = useState(false);
 
-  // Disparo / Leads
-  const [messageTemplate, setMessageTemplate] = useState('');
+  const lastStatesRef = useRef<Record<string, string>>({});
+  const heartBeatOnRef = useRef<boolean>(false);
+
+  // Contatos
   const [contacts, setContacts] = useState<Contact[]>([]);
-  const [leadsLimit, setLeadsLimit] = useState<number>(10);
 
-  // Upload CSV
+  // CSV
   const [csvContacts, setCsvContacts] = useState<Partial<Contact>[]>([]);
   const [csvFileName, setCsvFileName] = useState<string>('');
   const [csvImporting, setCsvImporting] = useState<boolean>(false);
 
-  // Grupos (Evolution fetch)
+  // GRUPOS — API (Evolution)
   const [availableGroups, setAvailableGroups] = useState<EvolutionGroup[]>([]);
   const [groupsLoading, setGroupsLoading] = useState<boolean>(false);
   const [groupFetchElapsed, setGroupFetchElapsed] = useState<number>(0);
 
-  // Grupos (Banco para Add)
+  // GRUPOS — Banco (salvos por instância)
   const [dbGroups, setDbGroups] = useState<DbGroup[]>([]);
   const [selectedGroupJid, setSelectedGroupJid] = useState<string>('');
   const [selectedGroupSubject, setSelectedGroupSubject] = useState<string>('');
 
+  // ===== NOVO: Busca + Paginação (API) =====
+  const [availGroupsSearch, setAvailGroupsSearch] = useState('');
+  const [availGroupsPage, setAvailGroupsPage] = useState(1);
+  const [availGroupsPerPage, setAvailGroupsPerPage] = useState(10);
+
+  // ===== NOVO: Busca + Paginação (salvos) =====
+  const [savedGroupsSearch, setSavedGroupsSearch] = useState('');
+  const [savedGroupsPage, setSavedGroupsPage] = useState(1);
+  const [savedGroupsPerPage, setSavedGroupsPerPage] = useState(10);
+
   // Adicionar ao grupo
   const [addLimit, setAddLimit] = useState<number>(10);
+
+  // Delay configurável
   const [addDelayValue, setAddDelayValue] = useState<number>(1);
   const [addDelayUnit, setAddDelayUnit] = useState<DelayUnit>('minutes');
   const [addRandom, setAddRandom] = useState<boolean>(false);
+
+  // NOVO: faixa de random (em segundos)
+  const [randomMinSeconds, setRandomMinSeconds] = useState<number>(550); // ~9m10s
+  const [randomMaxSeconds, setRandomMaxSeconds] = useState<number>(950); // ~15m50s
+
   const [addingToGroup, setAddingToGroup] = useState<boolean>(false);
 
-  // NOVO: rodízio multi-instância
+  // Rodízio multi-instância
   const [multiInstancesMode, setMultiInstancesMode] = useState<boolean>(false);
   const [instancesForAdd, setInstancesForAdd] = useState<string[]>([]);
   const [distributionMode, setDistributionMode] = useState<DistributionMode>('sequential');
 
-  // NOVO: concorrência + pause (ADD GRUPO)
+  // Concorrência + pause
   const [addConcurrency, setAddConcurrency] = useState<number>(2);
   const [addPaused, setAddPaused] = useState<boolean>(false);
   const addCtrl = useRef<{ paused: boolean }>({ paused: false });
+  const cancelAddRef = useRef<boolean>(false);
 
   // misc UI
   const [loading, setLoading] = useState(false);
@@ -130,7 +164,7 @@ const Dashboard = () => {
   const [copied, setCopied] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  // Tabela de contatos — controle de paginação e limite
+  // Tabela contatos
   const [itemsPerPage, setItemsPerPage] = useState<number>(10);
   const [currentPage, setCurrentPage] = useState<number>(1);
 
@@ -180,28 +214,48 @@ const Dashboard = () => {
   };
 
   const handleSignOut = async () => {
-    window.localStorage.removeItem('profile_id');
+    if (typeof window !== 'undefined') {
+      sessionStorage.removeItem('user_id');
+      sessionStorage.removeItem('profile_id');
+      window.localStorage.removeItem('profile_id');
+      document.cookie = 'user_id=; Path=/; Max-Age=0; SameSite=Lax';
+    }
     window.location.href = '/login';
   };
 
-  // checkbox/token style picker para rodízio multi-instância
   const toggleInstanceForAdd = (name: string) => {
     setInstancesForAdd(prev =>
       prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]
     );
   };
 
-  // ========= Effects =========
+  // ===== Helpers Evolution (estado/QR) =====
+  const extractState = (j: any): 'connected' | 'connecting' | 'disconnected' | 'unknown' => {
+    const raw = (j?.instance?.state ?? j?.state ?? j?.connection?.state ?? j?.status ?? '')
+      .toString()
+      .toLowerCase();
 
-  // contador do QR Code
+    if (!raw) return 'unknown';
+    if (raw === 'open') return 'connected';
+    if (['connecting', 'pairing', 'qrcode', 'qr', 'waiting_qr'].includes(raw)) return 'connecting';
+    if (['close', 'closed', 'disconnected', 'logout'].includes(raw)) return 'disconnected';
+    return raw as any;
+  };
+
+  const extractQr = (j: any): string | null => {
+    return j?.qrcode?.base64 || j?.qrcode || j?.instance?.qrcode?.base64 || j?.instance?.qrcode || null;
+  };
+
+  // ========= Effects =========
   useEffect(() => {
     let interval: NodeJS.Timeout;
     if (qrTimer > 0) {
+      setQrExpired(false);
       interval = setInterval(() => {
         setQrTimer(prev => {
           if (prev <= 1) {
-            addLog('Tempo do QR Code expirou. Gerar novamente se necessário.', 'info');
-            setQrCode('');
+            addLog('Tempo do QR Code expirou. Gere/libere novamente para tentar.', 'info');
+            setQrExpired(true);
             return 0;
           }
           return prev - 1;
@@ -211,7 +265,6 @@ const Dashboard = () => {
     return () => { if (interval) clearInterval(interval); };
   }, [qrTimer]);
 
-  // cronômetro de carregamento de grupos
   useEffect(() => {
     let timer: NodeJS.Timeout | null = null;
     if (groupsLoading) {
@@ -221,51 +274,28 @@ const Dashboard = () => {
     return () => { if (timer) clearInterval(timer); };
   }, [groupsLoading]);
 
-  // load inicial + realtime
   useEffect(() => {
-    loadInitialData();
+    setKpiConnected(instances.filter(i => i.status === 'connected').length);
+  }, [instances]);
 
-    const channel = supabase
-      .channel('whatsapp_instances_changes')
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'whatsapp_instances' },
-        payload => {
-          addLog(`Instância atualizada: ${(payload as any).new?.instance_name || ''}`, 'info');
-          loadInitialData();
-        }
-      )
-      .subscribe();
+  const markInstanceDisconnected = useCallback(async (instName: string) => {
+    lastStatesRef.current[instName] = 'disconnected';
+    setInstances(cur =>
+      cur.map(i => i.instance_name === instName ? { ...i, status: 'disconnected' } : i)
+    );
+    try {
+      await supabase
+        .from('whatsapp_instances')
+        .update({ status: 'disconnected' })
+        .eq('user_id', userId!)
+        .eq('instance_name', instName);
+    } catch {}
+    showToast(`Instância ${instName} desconectou (Connection Closed).`, 'error');
+    addLog(`Instância ${instName} marcada como desconectada (Connection Closed).`, 'error');
+  }, [userId]);
 
-    return () => { supabase.removeChannel(channel); };
-  }, []);
-
-  // quando trocar instância, buscar grupos do banco
-  useEffect(() => {
-    const fetchDbGroups = async () => {
-      setDbGroups([]);
-      setSelectedGroupJid('');
-      setSelectedGroupSubject('');
-      if (!selectedInstance) return;
-      const { data, error } = await supabase
-        .from('whatsapp_groups')
-        .select('group_id, group_subject')
-        .eq('instance_name', selectedInstance)
-        .order('group_subject', { ascending: true });
-
-      if (error) {
-        addLog(`Erro ao carregar grupos do banco: ${error.message}`, 'error');
-      } else {
-        setDbGroups((data || []) as DbGroup[]);
-        addLog(`Carregados ${data?.length || 0} grupos do banco para a instância`, 'success');
-      }
-    };
-    fetchDbGroups();
-  }, [selectedInstance]);
-
-  // ========= Load inicial =========
-
-  const loadInitialData = async () => {
+  const loadInitialData = useCallback(async () => {
+    if (!userId) return;
     try {
       addLog('Carregando dados iniciais...', 'info');
 
@@ -273,6 +303,7 @@ const Dashboard = () => {
       const { data: contactsData, error: contactsError } = await supabase
         .from('searches')
         .select('*')
+        .eq('user_id', userId)
         .not('telefone', 'is', null)
         .order('created_at', { ascending: false });
 
@@ -295,21 +326,22 @@ const Dashboard = () => {
       const { data: instancesData, error: instancesError } = await supabase
         .from('whatsapp_instances')
         .select('*')
+        .eq('user_id', userId)
         .order('created_at', { ascending: false });
 
       if (!instancesError && instancesData) {
-        setInstances(instancesData);
-        setKpiConnected(instancesData.filter((i: any) => i.status === 'connected').length);
+        setInstances(instancesData as WhatsAppInstance[]);
+        setKpiConnected((instancesData as WhatsAppInstance[]).filter((i: any) => i.status === 'connected').length);
         addLog(`${instancesData.length} instâncias carregadas`, 'success');
       } else if (instancesError) {
         addLog(`Erro ao carregar instâncias: ${instancesError.message}`, 'error');
       }
 
-      // KPIs (contagens simples no banco)
+      // KPIs
       const [{ count: sent }, { count: added }, { count: pending }] = await Promise.all([
-        supabase.from('searches').select('*', { count: 'exact', head: true }).eq('status_disparo', true),
-        supabase.from('searches').select('*', { count: 'exact', head: true }).eq('status_add_gp', true),
-        supabase.from('searches').select('*', { count: 'exact', head: true }).eq('status', 'pending')
+        supabase.from('searches').select('*', { count: 'exact', head: true }).eq('user_id', userId).eq('status_disparo', true),
+        supabase.from('searches').select('*', { count: 'exact', head: true }).eq('user_id', userId).eq('status_add_gp', true),
+        supabase.from('searches').select('*', { count: 'exact', head: true }).eq('user_id', userId).eq('status', 'pending')
       ]);
 
       setKpiSent(sent || 0);
@@ -320,10 +352,120 @@ const Dashboard = () => {
       addLog(`Erro geral no loadInitialData: ${msg}`, 'error');
       showToast('Erro ao carregar dados do banco', 'error');
     }
-  };
+  }, [userId]);
 
-  // ========= CSV Upload =========
+  useEffect(() => {
+    if (!userId) return;
+    loadInitialData();
 
+    const channel = supabase
+      .channel('whatsapp_instances_changes')
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'whatsapp_instances',
+          filter: `user_id=eq.${userId}`
+        },
+        () => {
+          addLog(`Instância atualizada (realtime).`, 'info');
+          loadInitialData();
+        }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [userId, loadInitialData]);
+
+  // quando trocar instância, buscar grupos salvos
+  useEffect(() => {
+    const fetchDbGroups = async () => {
+      setDbGroups([]);
+      setSelectedGroupJid('');
+      setSelectedGroupSubject('');
+      if (!selectedInstance || !userId) return;
+      const { data, error } = await supabase
+        .from('whatsapp_groups')
+        .select('group_id, group_subject')
+        .eq('user_id', userId)
+        .eq('instance_name', selectedInstance)
+        .order('group_subject', { ascending: true });
+
+      if (error) {
+        addLog(`Erro ao carregar grupos do banco: ${error.message}`, 'error');
+      } else {
+        setDbGroups((data || []) as DbGroup[]);
+        addLog(`Carregados ${data?.length || 0} grupos do banco para a instância`, 'success');
+      }
+    };
+    fetchDbGroups();
+  }, [selectedInstance, userId]);
+
+  // ========= Heartbeat de status =========
+  useEffect(() => {
+    if (!userId || instances.length === 0) return;
+    if (heartBeatOnRef.current) return;
+    heartBeatOnRef.current = true;
+
+    const INTERVAL = 12_000;
+
+    const tick = async () => {
+      await Promise.all(
+        instances.map(async (inst) => {
+          if (!inst?.hash || !inst?.instance_name) return;
+          try {
+            const r = await fetch(`${EVOLUTION_BASE}/instance/connectionState/${inst.instance_name}`, {
+              method: 'GET',
+              headers: { apikey: inst.hash },
+              cache: 'no-store',
+            });
+            const j = await r.json().catch(() => ({} as any));
+            const mapped = extractState(j);
+
+            const prev = lastStatesRef.current[inst.instance_name];
+            if (prev !== mapped) {
+              lastStatesRef.current[inst.instance_name] = mapped;
+              setInstances(cur =>
+                cur.map(i => i.instance_name === inst.instance_name ? { ...i, status: mapped } : i)
+              );
+              try {
+                await supabase.from('whatsapp_instances')
+                  .update({ status: mapped })
+                  .eq('user_id', userId!)
+                  .eq('instance_name', inst.instance_name);
+              } catch {}
+            }
+
+            if (selectedInstance === inst.instance_name) {
+              const qrb64 = extractQr(j);
+              if (qrb64) {
+                setQrCode(qrb64);
+                setQrTimer(QR_WINDOW_SECONDS);
+                setQrExpired(false);
+              }
+            }
+          } catch {
+            const prev = lastStatesRef.current[inst.instance_name] || inst.status;
+            const mapped = 'unknown';
+            if (prev !== mapped) {
+              lastStatesRef.current[inst.instance_name] = mapped;
+              setInstances(cur =>
+                cur.map(i => i.instance_name === inst.instance_name ? { ...i, status: mapped } : i
+              ));
+            }
+          }
+        })
+      );
+    };
+
+    const id = setInterval(tick, INTERVAL);
+    tick();
+
+    return () => { clearInterval(id); heartBeatOnRef.current = false; };
+  }, [instances, userId, selectedInstance]);
+
+  // ========= CSV =========
   const parseCSV = (raw: string) => {
     const firstLine = raw.split(/\r?\n/)[0] || '';
     const delimiter = firstLine.includes(';') && !firstLine.includes(',') ? ';' : ',';
@@ -337,22 +479,13 @@ const Dashboard = () => {
 
     const header = lines[0].split(delimiter).map(h => h.trim().toLowerCase());
 
-    // mapeamento flexível para telefone
     const phoneCandidates = [
-      'telefone',
-      'phone',
-      'phone_number',
-      'number',
-      'phone_numbwer_number',
-      'phonenumber',
-      'phonenumber'
+      'telefone', 'phone', 'phone_number', 'number', 'phone_numbwer_number', 'phonenumber'
     ];
     const telIdx = header.findIndex(h => phoneCandidates.includes(h));
-
     const nameIdx = header.findIndex(h => h === 'name' || h === 'nome');
 
     const parsed: Partial<Contact>[] = [];
-
     for (let i = 1; i < lines.length; i++) {
       const cols = lines[i].split(delimiter);
       const telefoneRaw = telIdx >= 0 ? (cols[telIdx] || '').replace(/\D/g, '') : '';
@@ -366,62 +499,40 @@ const Dashboard = () => {
         status_add_gp: false
       });
     }
-
     return parsed;
   };
 
   const handleCSVSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     if (!file.name.toLowerCase().endsWith('.csv')) {
-      showToast('Envie um arquivo .csv', 'error');
-      return;
+      showToast('Envie um arquivo .csv', 'error'); return;
     }
-
     setCsvFileName(file.name);
-
     const reader = new FileReader();
     reader.onload = evt => {
       try {
         const text = evt.target?.result?.toString() || '';
         const parsed = parseCSV(text);
-
-        if (parsed.length === 0) {
-          showToast('Nenhum contato válido encontrado no CSV', 'error');
-          setCsvContacts([]);
-          return;
-        }
-        if (parsed.length > 10000) {
-          showToast('Limite máximo é 10.000 contatos por upload', 'error');
-          setCsvContacts([]);
-          return;
-        }
-
+        if (parsed.length === 0) { showToast('Nenhum contato válido encontrado', 'error'); setCsvContacts([]); return; }
+        if (parsed.length > 10000) { showToast('Limite de 10.000 contatos', 'error'); setCsvContacts([]); return; }
         setCsvContacts(parsed);
-        showToast(`Arquivo lido: ${parsed.length} contato(s) pronto(s) para importar`, 'success');
-        addLog(`CSV carregado (${file.name}) com ${parsed.length} contatos válidos`, 'success');
+        showToast(`Arquivo lido: ${parsed.length} contato(s)`, 'success');
+        addLog(`CSV carregado (${file.name}) com ${parsed.length} contatos`, 'success');
       } catch {
-        showToast('Erro ao ler CSV', 'error');
-        addLog('Erro ao fazer parse do CSV', 'error');
-        setCsvContacts([]);
+        showToast('Erro ao ler CSV', 'error'); addLog('Erro parse CSV', 'error'); setCsvContacts([]);
       }
     };
     reader.readAsText(file, 'utf-8');
   };
 
   const handleImportCSV = async () => {
-    if (csvContacts.length === 0) {
-      showToast('Nenhum contato carregado', 'error');
-      return;
-    }
-    if (csvContacts.length > 10000) {
-      showToast('Máximo 10.000 contatos por upload', 'error');
-      return;
-    }
+    if (!userId) { showToast('Sessão inválida', 'error'); return; }
+    if (csvContacts.length === 0) { showToast('Nenhum contato carregado', 'error'); return; }
+    if (csvContacts.length > 10000) { showToast('Máximo 10.000 contatos', 'error'); return; }
 
     setCsvImporting(true);
-    addLog(`Iniciando importação CSV (${csvContacts.length} contatos) para o banco...`, 'info');
+    addLog(`Importando ${csvContacts.length} contatos...`, 'info');
     showToast('Importando contatos...', 'info');
 
     let insertedTotal = 0;
@@ -430,8 +541,8 @@ const Dashboard = () => {
     const chunkSize = 500;
     for (let i = 0; i < csvContacts.length; i += chunkSize) {
       const chunk = csvContacts.slice(i, i + chunkSize);
-
       const payload = chunk.map(c => ({
+        user_id: userId,
         name: c.name || null,
         telefone: c.telefone || null,
         status: 'pending',
@@ -441,57 +552,44 @@ const Dashboard = () => {
 
       try {
         const { error } = await supabase.from('searches').insert(payload);
-        if (error) {
-          insertErrors += payload.length;
-          addLog(`Erro ao inserir bloco [${i}-${i + chunkSize}]: ${error.message}`, 'error');
-        } else {
-          insertedTotal += payload.length;
-          addLog(`Bloco [${i}-${i + chunkSize}] inserido com sucesso (${payload.length} contatos)`, 'success');
-        }
+        if (error) { insertErrors += payload.length; addLog(`Erro bloco [${i}-${i + chunkSize}]: ${error.message}`, 'error'); }
+        else { insertedTotal += payload.length; addLog(`Bloco [${i}-${i + chunkSize}] inserido (${payload.length})`, 'success'); }
       } catch (err) {
         insertErrors += chunk.length;
-        addLog(`Exceção ao inserir bloco [${i}-${i + chunkSize}]: ${String(err)}`, 'error');
+        addLog(`Exceção bloco [${i}-${i + chunkSize}]: ${String(err)}`, 'error');
       }
     }
 
     setCsvImporting(false);
-    showToast(
-      `Importação finalizada. Sucesso: ${insertedTotal} | Falha: ${insertErrors}`,
-      insertErrors === 0 ? 'success' : 'error'
-    );
-    addLog(
-      `Importação CSV finalizada. Sucesso=${insertedTotal}, Falha=${insertErrors}`,
-      insertErrors === 0 ? 'success' : 'error'
-    );
-
+    showToast(`Importação: Sucesso ${insertedTotal} | Falha ${insertErrors}`, insertErrors === 0 ? 'success' : 'error');
+    addLog(`Importação finalizada. Sucesso=${insertedTotal}, Falha=${insertErrors}`, insertErrors === 0 ? 'success' : 'error');
     loadInitialData();
-    setCsvContacts([]);
-    setCsvFileName('');
+    setCsvContacts([]); setCsvFileName('');
   };
 
   // ========= Criar instância =========
-
   const handleCreateInstance = async () => {
+    if (!userId) { showToast('Sessão inválida', 'error'); return; }
     if (!instanceName) { showToast('Digite um nome para a instância', 'error'); return; }
     if (!phoneNumber || phoneNumber.length < 10) { showToast('Digite um número válido com DDD', 'error'); return; }
 
     setLoading(true);
     try {
       const fullNumber = `55${phoneNumber}`;
-      addLog(`Criando instância ${instanceName} para o número ${fullNumber}...`, 'info');
+      addLog(`Criando instância ${instanceName} (${fullNumber})...`, 'info');
 
       const response = await fetch(`${EVOLUTION_BASE}/instance/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', apikey: EVOLUTION_APIKEY },
         body: JSON.stringify({ instanceName, qrcode: true, number: fullNumber, integration: 'WHATSAPP-BAILEYS' })
       });
+      const data = await response.json().catch(() => ({} as any));
 
-      const data = await response.json().catch(() => ({}));
-
-      if (response.ok && data.qrcode) {
+      if (response.ok && data?.qrcode?.base64) {
         const { data: savedInstance, error } = await supabase
           .from('whatsapp_instances')
           .insert({
+            user_id: userId,
             instance_name: instanceName,
             status: 'connecting',
             qr_code: data.qrcode.base64,
@@ -500,78 +598,88 @@ const Dashboard = () => {
           })
           .select()
           .single();
-
         if (error) throw error;
 
-        setInstances(prev => [savedInstance, ...prev]);
+        setInstances(prev => [savedInstance as WhatsAppInstance, ...prev]);
         setSelectedInstance(instanceName);
         setQrCode(data.qrcode.base64);
-        setQrTimer(30);
+        setQrTimer(QR_WINDOW_SECONDS);
+        setQrExpired(false);
 
         addLog(`Instância ${instanceName} criada e aguardando conexão`, 'success');
         showToast('Instância criada! Escaneie o QR Code.', 'success');
 
         setInstanceName('');
         setPhoneNumber('');
-
-        const checkStatus = setInterval(async () => {
-          try {
-            const statusResponse = await fetch(
-              `${EVOLUTION_BASE}/instance/connectionState/${instanceName}`,
-              { headers: { apikey: EVOLUTION_APIKEY } }
-            );
-
-            const statusData = await statusResponse.json().catch(() => ({}));
-
-            if (statusData.state === 'open') {
-              await supabase
-                .from('whatsapp_instances')
-                .update({ status: 'connected', connected_at: new Date().toISOString(), qr_code: null })
-                .eq('instance_name', instanceName);
-
-              setQrCode('');
-              setQrTimer(0);
-              loadInitialData();
-              addLog(`Instância ${instanceName} conectada com sucesso`, 'success');
-              showToast(`WhatsApp conectado com sucesso!`, 'success');
-              clearInterval(checkStatus);
-            }
-          } catch (e) {
-            addLog(`Erro ao verificar status da instância ${instanceName}: ${e}`, 'error');
-          }
-        }, 3000);
-
-        setTimeout(() => clearInterval(checkStatus), 60000);
       } else {
         const errMsg = data?.message || 'Erro ao criar instância na Evolution API';
-        addLog(`Falha na criação da instância: ${errMsg}`, 'error');
+        addLog(`Falha criação: ${errMsg}`, 'error');
         throw new Error(errMsg);
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Erro desconhecido';
       addLog(`Erro ao criar instância: ${msg}`, 'error');
       showToast('Erro ao criar instância', 'error');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
-  // ========= AÇÕES DE INSTÂNCIA: reconectar, status, deletar =========
+  // ========= AÇÕES DE INSTÂNCIA =========
+  const handleShowSavedQR = async () => {
+    if (!selectedInstance) { showToast('Nenhuma instância selecionada.', 'error'); return; }
+    const mem = instances.find(i => i.instance_name === selectedInstance)?.qr_code || null;
+    let qr = mem;
+    if (!qr) {
+      const { data, error } = await supabase
+        .from('whatsapp_instances')
+        .select('qr_code')
+        .eq('user_id', userId!)
+        .eq('instance_name', selectedInstance)
+        .single();
+      if (error) { addLog(`Erro ao ler QR: ${error.message}`, 'error'); showToast('QR salvo não encontrado.', 'error'); return; }
+      qr = (data?.qr_code as string) || null;
+    }
+    if (!qr) { showToast('QR salvo não encontrado para esta instância.', 'error'); return; }
+
+    setQrCode(qr);
+    setQrExpired(false);
+    setQrTimer(QR_WINDOW_SECONDS);
+    addLog('QR salvo reexibido (sem gerar novo).', 'info');
+  };
 
   const handleReconnectInstance = async (inst: WhatsAppInstance) => {
-    if (!inst.hash) { showToast('API key não encontrada para esta instância', 'error'); return; }
+    if (!inst?.hash) { showToast('API key não encontrada para esta instância', 'error'); return; }
     try {
       addLog(`Solicitando reconexão da instância ${inst.instance_name}...`, 'info');
       const resp = await fetch(`${EVOLUTION_BASE}/instance/connect/${inst.instance_name}`, {
         method: 'GET',
         headers: { apikey: inst.hash }
       });
-      const txt = await resp.text().catch(() => '');
+
+      let body: any = null;
+      try { body = await resp.json(); } catch { body = null; }
+      const txt = body ? JSON.stringify(body) : (await resp.text().catch(() => ''));
+
       if (resp.ok) {
-        showToast('Reconexão solicitada. Verifique o status em alguns segundos.', 'success');
+        showToast('Reconexão solicitada.', 'success');
         addLog(`Reconexão solicitada. Resposta: ${txt}`, 'success');
 
-        await supabase.from('whatsapp_instances').update({ status: 'connecting' }).eq('instance_name', inst.instance_name);
-        setInstances(prev => prev.map(i => (i.instance_name === inst.instance_name ? { ...i, status: 'connecting' } : i)));
+        await supabase.from('whatsapp_instances')
+          .update({ status: 'connecting' })
+          .eq('user_id', userId!)
+          .eq('instance_name', inst.instance_name);
+
+        setInstances(prev => prev.map(i => (
+          i.instance_name === inst.instance_name ? { ...i, status: 'connecting' } : i
+        )));
+
+        const qrb64 = extractQr(body);
+        if (qrb64 && selectedInstance === inst.instance_name) {
+          setQrCode(qrb64);
+          setQrTimer(QR_WINDOW_SECONDS);
+          setQrExpired(false);
+        }
       } else {
         showToast('Falha ao solicitar reconexão', 'error');
         addLog(`Falha ao reconectar: HTTP ${resp.status} ${resp.statusText} | ${txt}`, 'error');
@@ -590,15 +698,14 @@ const Dashboard = () => {
         method: 'GET',
         headers: { apikey: inst.hash }
       });
-      const data = await resp.json().catch(() => ({}));
-      const state = data?.state || 'unknown';
-      addLog(`Estado atual: ${state}`, state === 'open' ? 'success' : 'info');
-      showToast(`Estado: ${state}`, state === 'open' ? 'success' : 'info');
+      const data = await resp.json().catch(() => ({} as any));
+      const mapped = extractState(data);
 
-      if (state === 'open') {
+      if (mapped === 'connected') {
         await supabase
           .from('whatsapp_instances')
           .update({ status: 'connected', connected_at: new Date().toISOString(), qr_code: null })
+          .eq('user_id', userId!)
           .eq('instance_name', inst.instance_name);
 
         setInstances(prev =>
@@ -607,9 +714,25 @@ const Dashboard = () => {
           )
         );
         if (selectedInstance === inst.instance_name) {
-          setQrCode('');
-          setQrTimer(0);
+          setQrCode(''); setQrTimer(0);
         }
+        showToast('Estado: open (conectado)', 'success');
+        addLog('Estado atual: open', 'success');
+      } else if (mapped === 'disconnected') {
+        await markInstanceDisconnected(inst.instance_name);
+      } else if (mapped === 'connecting') {
+        showToast('Estado: connecting', 'info');
+        addLog('Estado atual: connecting', 'info');
+        const qrb64 = extractQr(data);
+        if (qrb64) {
+          setSelectedInstance(inst.instance_name);
+          setQrCode(qrb64);
+          setQrTimer(QR_WINDOW_SECONDS);
+          setQrExpired(false);
+        }
+      } else {
+        showToast('Estado: unknown', 'info');
+        addLog('Estado atual: unknown', 'info');
       }
     } catch (e) {
       showToast('Erro ao verificar status', 'error');
@@ -618,7 +741,7 @@ const Dashboard = () => {
   };
 
   const handleDeleteInstance = async (inst: WhatsAppInstance) => {
-    if (!inst.hash) { showToast('API key não encontrada para esta instância', 'error'); return; }
+    if (!inst.hash) { showToast('API key não encontrada', 'error'); return; }
     const confirmDelete = window.confirm(
       `Tem certeza que deseja excluir a instância "${inst.instance_name}"?\nIsso irá deletar na Evolution e no banco.`
     );
@@ -641,6 +764,7 @@ const Dashboard = () => {
       const { error } = await supabase
         .from('whatsapp_instances')
         .delete()
+        .eq('user_id', userId!)
         .eq('instance_name', inst.instance_name);
       if (error) {
         addLog(`Erro ao apagar no banco: ${error.message}`, 'error');
@@ -650,9 +774,7 @@ const Dashboard = () => {
 
       setInstances(prev => prev.filter(i => i.instance_name !== inst.instance_name));
       if (selectedInstance === inst.instance_name) {
-        setSelectedInstance('');
-        setQrCode('');
-        setQrTimer(0);
+        setSelectedInstance(''); setQrCode(''); setQrTimer(0);
       }
 
       addLog(`Instância "${inst.instance_name}" removida com sucesso`, 'success');
@@ -664,7 +786,6 @@ const Dashboard = () => {
   };
 
   // ========= Puxar grupos (Evolution) =========
-
   const fetchWithTimeout = async (resource: string, options: RequestInit, timeoutMs: number) => {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);
@@ -705,10 +826,11 @@ const Dashboard = () => {
           let groupsList: EvolutionGroup[] = [];
           if (Array.isArray(json)) groupsList = json as EvolutionGroup[];
           else if (Array.isArray(json?.groups)) groupsList = json.groups as EvolutionGroup[];
-          else if (json && json.id && json.subject) groupsList = [json as EvolutionGroup];
+          else if (json && (json as any).id && (json as any).subject) groupsList = [json as EvolutionGroup];
 
           if (groupsList.length > 0) {
             setAvailableGroups(groupsList);
+            setAvailGroupsPage(1); // reset pág.
             addLog(`Recebidos ${groupsList.length} grupo(s).`, 'success');
             showToast(`Foram encontrados ${groupsList.length} grupo(s)`, 'success');
             setGroupsLoading(false);
@@ -725,94 +847,15 @@ const Dashboard = () => {
     showToast('Não foi possível obter os grupos após várias tentativas.', 'error');
   };
 
-  // ========= Disparo de mensagens =========
+  // ========= Adicionar pessoas ao grupo =========
 
-  const handleSendMessages = async () => {
-    if (!selectedInstance) { showToast('Selecione uma instância WhatsApp', 'error'); return; }
-    if (!messageTemplate) { showToast('Digite uma mensagem', 'error'); return; }
-    if (contacts.length === 0) { showToast('Não há contatos para enviar', 'error'); return; }
-    if (leadsLimit < 1) { showToast('A quantidade mínima de leads é 1', 'error'); return; }
-
-    const instance = instances.find(i => i.instance_name === selectedInstance);
-    if (!instance?.hash) { showToast('Hash da instância não encontrado', 'error'); return; }
-
-    setLoading(true);
-    showToast('Iniciando disparo de mensagens...', 'info');
-    addLog(`Iniciando disparo: instância=${selectedInstance}, leadsLimit=${leadsLimit}`, 'info');
-
-    let sentCount = 0;
-    let failedCount = 0;
-
-    const eligibleContacts = contacts.filter(c => {
-      const jaDisparou = c.status_disparo === true;
-      const estaPending = (c.status || '').toLowerCase() === 'pending';
-      return estaPending && !jaDisparou && !!c.telefone;
-    });
-
-    const contactsToSend = eligibleContacts.slice(0, leadsLimit);
-    if (contactsToSend.length === 0) {
-      showToast('Nenhum lead elegível para disparo', 'error');
-      setLoading(false);
-      return;
-    }
-
-    for (const contact of contactsToSend) {
-      try {
-        const justDigits = contact.telefone!.replace(/\D/g, '');
-        const finalNumber = justDigits.startsWith('55') ? justDigits : `55${justDigits}`;
-
-        const response = await fetch(
-          `${EVOLUTION_BASE}/message/sendText/${selectedInstance}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', apikey: instance.hash },
-            body: JSON.stringify({ number: finalNumber, text: messageTemplate })
-          }
-        );
-
-        const responseText = await response.text().catch(() => '[sem corpo]');
-        if (response.ok) {
-          sentCount++;
-          addLog(`✅ Mensagem enviada para ${contact.name || finalNumber}. Resposta: ${responseText}`, 'success');
-
-          const { error: updateError } = await supabase
-            .from('searches')
-            .update({ status_disparo: true, updated_at: new Date().toISOString() })
-            .eq('id', contact.id);
-
-          if (updateError) addLog(`Falha ao marcar status_disparo: ${updateError.message}`, 'error');
-        } else {
-          failedCount++;
-          addLog(`❌ Falha ao enviar para ${contact.name || finalNumber}. HTTP ${response.status} | ${responseText}`, 'error');
-        }
-
-        await new Promise(r => setTimeout(r, 2000));
-      } catch (error) {
-        failedCount++;
-        addLog(`❌ Erro inesperado ao enviar: ${String(error)}`, 'error');
-      }
-    }
-
-    addLog(`Resumo do disparo: sucesso=${sentCount} | falhas=${failedCount}`, 'info');
-    showToast(`Disparo finalizado! Sucesso: ${sentCount} | Falhas: ${failedCount}`, failedCount ? 'error' : 'success');
-    setKpiSent(prev => prev + sentCount);
-    setKpiFailedSends(prev => prev + failedCount);
-
-    setMessageTemplate('');
-    setLoading(false);
-  };
-
-  // ========= Adicionar pessoas ao grupo (com multi-instâncias, concorrência e pausa) =========
-
+  // NOVO: random com faixa [min,max] em segundos
   const computeRandomDelayMs = (): number => {
-    const roll = Math.random();
-    if (roll < 0.9) { // 90% minutos
-      const m = Math.floor(Math.random() * 5) + 1; // 1..5
-      const s = Math.floor(Math.random() * 60);    // 0..59
-      return (m * 60 + s) * 1000;
-    }
-    const sOnly = Math.floor(Math.random() * 50) + 10; // 10..59
-    return sOnly * 1000;
+    let minS = Math.max(1, Math.floor(Number(randomMinSeconds) || 1));
+    let maxS = Math.max(1, Math.floor(Number(randomMaxSeconds) || 1));
+    if (minS > maxS) [minS, maxS] = [maxS, minS];
+    const sec = Math.floor(Math.random() * (maxS - minS + 1)) + minS;
+    return sec * 1000;
   };
 
   const getConfiguredDelayMs = (): number => {
@@ -823,14 +866,11 @@ const Dashboard = () => {
   };
 
   const handleAddToGroup = async () => {
+    if (!userId) { showToast('Sessão inválida', 'error'); return; }
     if (!selectedGroupJid) { showToast('Selecione um grupo', 'error'); return; }
 
-    // montar pool de instâncias que vão executar o add
-    const chosenNames = multiInstancesMode
-      ? instancesForAdd
-      : [selectedInstance];
-
-    const instPool = chosenNames
+    const chosenNames = multiInstancesMode ? instancesForAdd : [selectedInstance];
+    const instPool: WhatsAppInstance[] = chosenNames
       .map(name => instances.find(i => i.instance_name === name))
       .filter((i): i is WhatsAppInstance => Boolean(i && i.hash));
 
@@ -840,14 +880,12 @@ const Dashboard = () => {
       return;
     }
 
-    // escolher contatos elegíveis
     const eligible = contacts.filter(c =>
       !!c.telefone &&
       c.status_add_gp !== true &&
       (c.status || '').toLowerCase() !== 'added'
     );
     const toAdd = eligible.slice(0, Math.max(1, addLimit));
-
     if (toAdd.length === 0) {
       showToast('Nenhum lead elegível para adicionar ao grupo.', 'error');
       addLog('Nenhum lead elegível para adicionar.', 'error');
@@ -857,9 +895,10 @@ const Dashboard = () => {
     setAddingToGroup(true);
     setAddPaused(false);
     addCtrl.current.paused = false;
+    cancelAddRef.current = false;
 
     addLog(
-      `ADD Grupo iniciado: grupo="${selectedGroupSubject || selectedGroupJid}" | leads=${toAdd.length} | instâncias=${instPool.length} | modo=${distributionMode} | concorrência=${addConcurrency}`,
+      `ADD Grupo iniciado: grupo="${selectedGroupSubject || selectedGroupJid}" | leads=${toAdd.length} | modo=${distributionMode} | concorrência=${addConcurrency}`,
       'info'
     );
     showToast('Iniciando inclusão no grupo...', 'info');
@@ -867,8 +906,34 @@ const Dashboard = () => {
     let ok = 0, fail = 0;
     let globalIndex = 0;
 
+    const pickInstance = (idx: number) => {
+      if (instances.length === 0) return null;
+      const valid = instances
+        .filter(i => (multiInstancesMode ? instancesForAdd.includes(i.instance_name) : i.instance_name === selectedInstance))
+        .filter(i => i.status === 'connecting' || i.status === 'connected' || i.status === 'unknown')
+        .filter(i => !!i.hash);
+
+      if (valid.length === 0) return null;
+      return distributionMode === 'sequential'
+        ? valid[idx % valid.length]
+        : valid[Math.floor(Math.random() * valid.length)];
+    };
+
+    const parseIsConnectionClosed = (status: number, text: string) => {
+      try {
+        const obj = JSON.parse(text);
+        const msgs = obj?.response?.message || obj?.message;
+        const flat = Array.isArray(msgs) ? msgs.join(' ').toLowerCase() : String(msgs || '').toLowerCase();
+        return status === 400 && flat.includes('connection closed');
+      } catch {
+        return status === 400 && text.toLowerCase().includes('connection closed');
+      }
+    };
+
     const worker = async (wid: number) => {
       while (true) {
+        if (cancelAddRef.current) break;
+
         const idx = globalIndex++;
         if (idx >= toAdd.length) break;
 
@@ -878,19 +943,20 @@ const Dashboard = () => {
         const digits = (c.telefone || '').replace(/\D/g, '');
         const numberE164 = digits.startsWith('55') ? digits : `55${digits}`;
 
-        // pegar instância para ESTE contato (sequencial ou aleatório)
-        const instObj =
-          distributionMode === 'sequential'
-            ? instPool[idx % instPool.length]
-            : instPool[Math.floor(Math.random() * instPool.length)];
-
-        // Até 3 tentativas com backoff para rate-limit
         let attempts = 0;
         let success = false;
 
-        while (attempts < 3 && !success) {
+        while (attempts < 3 && !success && !cancelAddRef.current) {
           await waitIfAddPaused();
           attempts++;
+
+          const instObj = pickInstance(idx);
+          if (!instObj) {
+            cancelAddRef.current = true;
+            addLog('Inclusão abortada — sem instâncias ativas.', 'error');
+            showToast('Todas as instâncias caíram. Inclusão abortada.', 'error');
+            break;
+          }
 
           try {
             const url = `${EVOLUTION_BASE}/group/updateParticipant/${instObj.instance_name}?groupJid=${encodeURIComponent(selectedGroupJid)}`;
@@ -903,59 +969,54 @@ const Dashboard = () => {
             });
 
             const txt = await resp.text().catch(() => '');
-            const lowerTxt = (txt || '').toLowerCase();
+
+            if (parseIsConnectionClosed(resp.status, txt)) {
+              await markInstanceDisconnected(instObj.instance_name);
+              attempts = 0;
+              continue;
+            }
 
             if (resp.ok) {
               ok++;
-              addLog(
-                `✅ [${instObj.instance_name}] (${wid}) Adicionado ${numberE164} ao grupo.`,
-                'success'
-              );
+              addLog(`✅ [${instObj.instance_name}] (${wid}) Adicionado ${numberE164} ao grupo.`, 'success');
 
               const { error: upErr } = await supabase
                 .from('searches')
                 .update({ status_add_gp: true, status: 'added', updated_at: new Date().toISOString() })
+                .eq('user_id', userId!)
                 .eq('id', c.id);
-              if (upErr) addLog(`Falhou ao atualizar status do contato ${c.id}: ${upErr.message}`, 'error');
+              if (upErr) addLog(`Falhou atualizar status do contato ${c.id}: ${upErr.message}`, 'error');
 
               success = true;
             } else {
-              const isRate =
-                resp.status === 429 ||
-                lowerTxt.includes('rate-overlimit') ||
-                lowerTxt.includes('too many') ||
-                lowerTxt.includes('limit');
-
+              const lowerTxt = (txt || '').toLowerCase();
+              const isRate = resp.status === 429 || lowerTxt.includes('rate-overlimit') || lowerTxt.includes('too many') || lowerTxt.includes('limit');
               if (isRate && attempts < 3) {
                 const base = Math.max(getConfiguredDelayMs(), 2000);
-                const jitter = 1000 + Math.floor(Math.random() * 2000);
+                const jitter = 1000 + Math.random() * 2000;
                 const wait = base + jitter;
-                addLog(`⚠️ [${instObj.instance_name}] (${wid}) Rate-limit para ${numberE164}. Backoff ${(wait / 1000).toFixed(1)}s (tentativa ${attempts}/3)`, 'info');
+                addLog(`⚠️ Rate-limit. Backoff ${(wait / 1000).toFixed(1)}s (tentativa ${attempts}/3)`, 'info');
                 await sleep(wait);
                 continue;
               }
-
               fail++;
-              addLog(
-                `❌ [${instObj.instance_name}] (${wid}) Falha ao adicionar ${numberE164}. HTTP ${resp.status} ${resp.statusText} | ${txt}`,
-                'error'
-              );
+              addLog(`❌ Falha ao adicionar ${numberE164}. HTTP ${resp.status} | ${txt}`, 'error');
               break;
             }
           } catch (e) {
             if (attempts < 3) {
               const wait = Math.max(getConfiguredDelayMs(), 2000);
-              addLog(`⚠️ [${instObj.instance_name}] (${wid}) Exceção para ${numberE164}. Retentando em ${(wait / 1000).toFixed(1)}s (tentativa ${attempts}/3).`, 'info');
+              addLog(`⚠️ Exceção. Retentando em ${(wait / 1000).toFixed(1)}s (tentativa ${attempts}/3).`, 'info');
               await sleep(wait);
             } else {
               fail++;
-              addLog(`❌ [${instObj.instance_name}] (${wid}) Erro final para ${numberE164}: ${String(e)}`, 'error');
+              addLog(`❌ Erro final: ${String(e)}`, 'error');
             }
           }
         }
 
         const waitMs = getConfiguredDelayMs();
-        addLog(`⏳ (${wid}) aguardando ${(waitMs / 1000).toFixed(1)}s...`, 'info');
+        addLog(`⏳ aguardando ${(waitMs / 1000).toFixed(1)}s...`, 'info');
         await sleep(waitMs);
       }
     };
@@ -963,12 +1024,17 @@ const Dashboard = () => {
     const N = Math.max(1, Math.min(addConcurrency, toAdd.length));
     await Promise.all(Array.from({ length: N }, (_, i) => worker(i)));
 
-    addLog(`Inclusão no grupo finalizada. Sucesso=${ok} | Falhas=${fail}`, 'info');
-    showToast(`Inclusão finalizada — Sucesso: ${ok} | Falhas: ${fail}`, fail === 0 ? 'success' : 'error');
-
     setAddingToGroup(false);
     setAddPaused(false);
     addCtrl.current.paused = false;
+
+    if (!cancelAddRef.current) {
+      addLog(`Inclusão finalizada. Sucesso=${ok} | Falhas=${fail}`, 'info');
+      showToast(`Inclusão finalizada — Sucesso: ${ok} | Falhas: ${fail}`, fail === 0 ? 'success' : 'error');
+    } else {
+      addLog(`Inclusão interrompida. Parcial — Sucesso=${ok} | Falhas=${fail}`, 'error');
+    }
+
     setKpiAdded(prev => prev + ok);
     setKpiFailedAdds(prev => prev + fail);
 
@@ -985,44 +1051,68 @@ const Dashboard = () => {
   };
 
   // ========= Export CSV =========
-
   const handleExportCSV = () => {
     if (contacts.length === 0) { showToast('Não há contatos para exportar', 'error'); return; }
-
     const headers = ['Nome','Telefone','Status','Status_Disparo','Status_Add_GP'];
     const rows = contacts.map(c => [
       c.name || '', c.telefone || '', c.status || '',
       c.status_disparo ? 'true' : 'false',
       c.status_add_gp ? 'true' : 'false'
     ]);
-
     const csvContent = [headers.join(','), ...rows.map(r => r.map(c => `"${c}"`).join(','))].join('\n');
-
     const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
     link.download = `contatos_${new Date().toISOString().split('T')[0]}.csv`;
     link.click();
-
     showToast('CSV exportado com sucesso!', 'success');
   };
 
-  // ========= Tabela — paginação/limite =========
+  // ========= Tabela — contatos =========
   const filteredContacts = contacts;
   const totalPages = Math.ceil(filteredContacts.length / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
   const endIndex = startIndex + itemsPerPage;
   const paginatedContacts = filteredContacts.slice(startIndex, endIndex);
-
   useEffect(() => { setCurrentPage(1); }, [itemsPerPage]);
 
-  // ========= Render =========
+  // ========= NOVO: Filtro/Paginação para grupos =========
+  const filteredAvailGroups = availableGroups.filter(g => {
+    const q = availGroupsSearch.toLowerCase().trim();
+    if (!q) return true;
+    return (g.subject || '').toLowerCase().includes(q) || (g.id || '').toLowerCase().includes(q);
+  });
+  const availStart = (availGroupsPage - 1) * availGroupsPerPage;
+  const availEnd = availStart + availGroupsPerPage;
+  const pagedAvailGroups = filteredAvailGroups.slice(availStart, availEnd);
+  const availTotalPages = Math.ceil(filteredAvailGroups.length / availGroupsPerPage);
+  useEffect(() => { setAvailGroupsPage(1); }, [availGroupsPerPage, availGroupsSearch]);
 
-  if (checking) {
+  const filteredSavedGroups = dbGroups.filter(g => {
+    const q = savedGroupsSearch.toLowerCase().trim();
+    if (!q) return true;
+    return (g.group_subject || '').toLowerCase().includes(q) || (g.group_id || '').toLowerCase().includes(q);
+  });
+  const savedStart = (savedGroupsPage - 1) * savedGroupsPerPage;
+  const savedEnd = savedStart + savedGroupsPerPage;
+  const pagedSavedGroups = filteredSavedGroups.slice(savedStart, savedEnd);
+  const savedTotalPages = Math.ceil(filteredSavedGroups.length / savedGroupsPerPage);
+  useEffect(() => { setSavedGroupsPage(1); }, [savedGroupsPerPage, savedGroupsSearch]);
+
+  // ========= Botões do QR =========
+  const handleRegenerateQR = () => { handleShowSavedQR(); };
+  const handleCloseQr = async () => {
+    const inst = instances.find(i => i.instance_name === selectedInstance);
+    if (inst) { await handleCheckStatus(inst); }
+    setQrCode(''); setQrTimer(0); setQrExpired(false);
+  };
+
+  // ========= Render =========
+  if (checking || userId === null) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-green-50 to-yellow-50">
         <div className="bg-white rounded-xl shadow-lg p-6 border border-lime-200 text-center">
-          <p className="text-gray-700 font-medium">Verificando sessão...</p>
+          <p className="text-gray-700 font-medium">Preparando seu ambiente...</p>
         </div>
       </div>
     );
@@ -1055,22 +1145,18 @@ const Dashboard = () => {
       </div>
 
       <style jsx>{`
-        @keyframes slideIn {
-          from { transform: translateX(400px); opacity: 0; }
-          to { transform: translateX(0); opacity: 1; }
-        }
+        @keyframes slideIn { from { transform: translateX(400px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
       `}</style>
 
       {/* Header */}
       <header className="bg-white/90 backdrop-blur border-b border-yellow-300">
         <div className="container mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3 min-w-0">
-            {/* Slot da LOGO (maior) */}
             <div className="h-12 w-auto sm:h-14 md:h-16 flex items-center">
               <img src="/zaploto.png" alt="ZapLoto" className="h-12 sm:h-14 md:h-16 w-auto object-contain" />
             </div>
             <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold bg-gradient-to-r from-yellow-600 to-emerald-700 bg-clip-text text-transparent truncate">
-              ZapLoto — Operador WhatsApp
+              ZapLoto
             </h1>
           </div>
 
@@ -1085,7 +1171,7 @@ const Dashboard = () => {
       </header>
 
       <div className="container mx-auto px-6 py-8 space-y-8">
-        {/* Painel de KPIs */}
+        {/* KPIs */}
         <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           {[
             { label: 'Mensagens enviadas', value: kpiSent, tone: 'from-yellow-400 to-yellow-500' },
@@ -1108,11 +1194,11 @@ const Dashboard = () => {
           ))}
         </section>
 
-        {/* WhatsApp — criar e GERENCIAR INSTÂNCIAS */}
+        {/* Instâncias WhatsApp */}
         <section className="bg-white rounded-xl shadow-lg p-6 border border-yellow-200">
           <h2 className="text-xl font-semibold text-emerald-800 mb-4">📱 Instâncias WhatsApp</h2>
 
-          {/* Criar Instância */}
+          {/* Criar */}
           <div className="mb-8 grid sm:grid-cols-3 gap-3">
             <input
               type="text"
@@ -1137,10 +1223,10 @@ const Dashboard = () => {
             >
               Criar Instância
             </button>
-            <p className="sm:col-span-3 text-xs text-gray-500">Formato do número: 81900000000 (DDD + número sem espaços ou 55)</p>
+            <p className="sm:col-span-3 text-xs text-gray-500">Formato do número: 81900000000 (DDD + número)</p>
           </div>
 
-          {/* Instâncias ativas — layout clean + ações */}
+          {/* Lista */}
           {instances.length > 0 && (
             <div className="mb-2">
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -1148,7 +1234,7 @@ const Dashboard = () => {
                   const connected = inst.status === 'connected';
                   const connecting = inst.status === 'connecting';
                   return (
-                    <div key={inst.id} className="p-5 rounded-xl border-2 border-yellow-200 bg-white hover:shadow-md transition">
+                    <div key={inst.id || inst.instance_name} className="p-5 rounded-xl border-2 border-yellow-200 bg-white hover:shadow-md transition">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
@@ -1189,19 +1275,7 @@ const Dashboard = () => {
                         </div>
                       )}
 
-                      <div className="mt-4 grid grid-cols-2 gap-2">
-                        <button
-                          onClick={() => setSelectedInstance(inst.instance_name)}
-                          className={`inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border text-xs ${
-                            selectedInstance === inst.instance_name
-                              ? 'bg-emerald-600 text-white border-emerald-600'
-                              : 'bg-white text-gray-700 border-yellow-200 hover:bg-yellow-50'
-                          }`}
-                          title="Usar esta instância"
-                        >
-                          Selecionar
-                        </button>
-
+                      <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
                         <button
                           onClick={() => handleReconnectInstance(inst)}
                           className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border bg-white text-gray-700 hover:bg-yellow-50 transition text-xs border-yellow-200"
@@ -1233,10 +1307,10 @@ const Dashboard = () => {
             </div>
           )}
 
-          {/* QR Code */}
+          {/* QR */}
           {qrCode && (
-            <div className="flex flex-col items-center mt-6 p-6 bg-gradient-to-br from-emerald-50 to-yellow-50 rounded-lg border-2 border-emerald-200">
-              {qrTimer > 0 && (
+            <div className="relative flex flex-col items-center mt-6 p-6 bg-gradient-to-br from-emerald-50 to-yellow-50 rounded-lg border-2 border-emerald-200">
+              {qrTimer > 0 ? (
                 <div className="mb-4 bg-gradient-to-r from-amber-500 to-red-500 text-white px-6 py-3 rounded-lg shadow-lg">
                   <div className="flex items-center gap-3">
                     <div className="text-3xl font-bold animate-pulse">{qrTimer}s</div>
@@ -1246,10 +1320,46 @@ const Dashboard = () => {
                     </div>
                   </div>
                 </div>
+              ) : (
+                <div className="mb-4 bg-gray-800 text-white px-6 py-3 rounded-lg shadow-lg">
+                  <div className="flex items-center gap-3">
+                    <div className="text-3xl font-bold">⚠️</div>
+                    <div className="text-sm">
+                      <div className="font-semibold">QR expirado</div>
+                      <div className="text-xs opacity-90">Clique para liberar o QR salvo novamente</div>
+                    </div>
+                  </div>
+                </div>
               )}
 
-              <div className="bg-white p-6 rounded-lg shadow-xl border-4 border-emerald-500">
-                <img src={qrCode} alt="QR Code" className="w-72 h-72" />
+              <div className="relative">
+                <button
+                  onClick={handleCloseQr}
+                  className="absolute -top-3 -right-3 bg-red-600 text-white rounded-full p-2 shadow hover:bg-red-700"
+                  title="Fechar QR"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+
+                <div className={`bg-white p-6 rounded-lg shadow-xl border-4 border-emerald-500 ${qrExpired ? 'filter blur-md' : ''}`}>
+                  <img src={qrCode} alt="QR Code" className="w-72 h-72 select-none pointer-events-none" />
+                </div>
+
+                {qrExpired && (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="bg-white/70 backdrop-blur-sm rounded-lg p-4 border border-emerald-300 text-center">
+                      <p className="font-semibold text-emerald-900">QR expirado</p>
+                      <p className="text-sm text-gray-700 mt-1">Clique para liberar o QR salvo novamente</p>
+                      <button
+                        onClick={handleRegenerateQR}
+                        className="mt-3 inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition text-sm"
+                      >
+                        <RefreshCw className="w-4 h-4" />
+                        Tentar reconectar (liberar QR salvo)
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div className="mt-4 text-center">
@@ -1259,14 +1369,15 @@ const Dashboard = () => {
             </div>
           )}
 
-          {/* Gestão de Grupos (Evolution – opcional) */}
+          {/* ======== GERENCIAR GRUPOS ======== */}
           <div className="mt-10">
             <h3 className="font-medium text-emerald-800 mb-3 flex items-center gap-2">
               <Users2 className="w-5 h-5 text-emerald-700" />
-              Gerenciar Grupos da Instância (API Evolution)
+              Gerenciar Grupos da Instância 
             </h3>
 
-            <div className="space-y-4">
+            <div className="space-y-6">
+              {/* Seletor de instância */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Instância selecionada</label>
                 <select
@@ -1276,74 +1387,278 @@ const Dashboard = () => {
                 >
                   <option value="">Escolha a instância</option>
                   {instances
-                    .filter(i => i.status === 'connecting' || i.status === 'connected')
+                    .filter(i => i.status === 'connecting' || i.status === 'connected' || i.status === 'unknown')
                     .map(inst => (
-                      <option key={inst.id} value={inst.instance_name}>
+                      <option key={inst.id || inst.instance_name} value={inst.instance_name}>
                         {inst.instance_name} (+{inst.number})
                       </option>
                     ))}
                 </select>
               </div>
 
-              <button
-                onClick={fetchGroupsFromInstance}
-                disabled={groupsLoading || !selectedInstance}
-                className="inline-flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-yellow-400 to-emerald-600 text-white rounded-lg hover:from-yellow-500 hover:to-emerald-700 transition disabled:opacity-50 text-sm font-medium border border-yellow-300"
-              >
-                <RefreshCw className={`w-4 h-4 ${groupsLoading ? 'animate-spin' : ''}`} />
-                {groupsLoading ? `Carregando grupos... (${groupFetchElapsed}s)` : 'Carregar grupos da instância'}
-              </button>
+              {/* Botão carregar grupos da API */}
+              <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+                <button
+                  onClick={fetchGroupsFromInstance}
+                  disabled={groupsLoading || !selectedInstance}
+                  className="inline-flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-yellow-400 to-emerald-600 text-white rounded-lg hover:from-yellow-500 hover:to-emerald-700 transition disabled:opacity-50 text-sm font-medium border border-yellow-300"
+                >
+                  <RefreshCw className={`w-4 h-4 ${groupsLoading ? 'animate-spin' : ''}`} />
+                  {groupsLoading ? `Carregando grupos... (${groupFetchElapsed}s)` : 'Carregar grupos da instância (API)'}
+                </button>
+                <span className="text-xs text-gray-500">A listagem abaixo é paginada (client-side).</span>
+              </div>
 
-              {availableGroups.length > 0 ? (
-                <div className="border border-yellow-200 rounded-lg divide-y divide-yellow-100 bg-yellow-50/40">
-                  {availableGroups.map(g => (
-                    <div key={g.id} className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                      <div>
-                        <div className="font-semibold text-gray-800">{g.subject || '(sem nome)'}</div>
-                        <div className="text-xs text-gray-600 break-all">
-                          ID: <span className="font-mono">{g.id}</span>
-                        </div>
-                        <div className="text-xs text-gray-600">Membros: {g.size ?? '—'}</div>
-                      </div>
-
-                      <button
-                        onClick={async () => {
-                          setSelectedGroupJid(g.id);
-                          setSelectedGroupSubject(g.subject || '');
-                          addLog(`Grupo selecionado: "${g.subject}" (${g.id})`, 'success');
-                          const { error } = await supabase.from('whatsapp_groups').insert({
-                            instance_name: selectedInstance,
-                            group_id: g.id,
-                            group_subject: g.subject,
-                            picture_url: g.pictureUrl || null,
-                            size: g.size ?? null
-                          });
-                          if (error) addLog(`Erro ao salvar grupo no banco: ${error.message}`, 'error');
-                          else addLog(`Grupo salvo no banco`, 'success');
-                        }}
-                        className="text-xs px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition"
-                      >
-                        Selecionar & salvar
-                      </button>
-                    </div>
-                  ))}
+              {/* ===== Tabela de GRUPOS SALVOS (Banco) — TEMA PRETO ===== */}
+              <div className="border border-gray-800 rounded-xl p-4 bg-black text-white">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <h4 className="font-semibold">Grupos salvos no banco</h4>
+                    <p className="text-xs text-gray-400">Selecione um para usar no envio.</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={savedGroupsSearch}
+                      onChange={e => setSavedGroupsSearch(e.target.value)}
+                      placeholder="Pesquisar nos grupos salvos..."
+                      className="px-3 py-2 rounded-lg text-sm w-64 border border-gray-700 bg-gray-900 text-gray-100 placeholder-gray-500"
+                    />
+                    <select
+                      value={savedGroupsPerPage}
+                      onChange={e => setSavedGroupsPerPage(parseInt(e.target.value))}
+                      className="px-3 py-2 rounded-lg text-sm border border-gray-700 bg-gray-900 text-gray-100"
+                    >
+                      {[5,10,25,50].map(n => <option key={n} value={n}>{n}/página</option>)}
+                    </select>
+                  </div>
                 </div>
-              ) : (
-                <p className="text-sm text-gray-600 italic">
-                  Nenhum grupo carregado ainda. (esta lista vem da API Evolution)
-                </p>
-              )}
+
+                {pagedSavedGroups.length === 0 ? (
+                  <p className="text-sm text-gray-400 mt-3 italic">Nenhum grupo salvo para esta instância.</p>
+                ) : (
+                  <>
+                    <div className="mt-3 overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-black border-b border-gray-800">
+                          <tr>
+                            <th className="text-left px-3 py-2 font-semibold text-gray-100">Nome</th>
+                            <th className="text-left px-3 py-2 font-semibold text-gray-100">ID</th>
+                            <th className="text-left px-3 py-2 font-semibold text-gray-100">Ação</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-800 bg-black text-gray-100">
+                          {pagedSavedGroups.map(g => (
+                            <tr key={g.group_id} className="hover:bg-gray-900">
+                              <td className="px-3 py-2">{g.group_subject || '(sem nome)'}</td>
+                              <td className="px-3 py-2 font-mono text-xs break-all text-gray-300">{g.group_id}</td>
+                              <td className="px-3 py-2">
+                                <button
+                                  onClick={() => {
+                                    setSelectedGroupJid(g.group_id);
+                                    setSelectedGroupSubject(g.group_subject || '');
+                                    showToast('Grupo selecionado', 'success');
+                                  }}
+                                  className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs hover:bg-emerald-700"
+                                >
+                                  Selecionar
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Paginação grupos salvos */}
+                    <div className="flex items-center justify-between mt-3 text-gray-300">
+                      <span className="text-xs">
+                        Mostrando {savedStart + 1}–{Math.min(savedEnd, filteredSavedGroups.length)} de {filteredSavedGroups.length}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => setSavedGroupsPage(p => Math.max(1, p - 1))}
+                          disabled={savedGroupsPage === 1}
+                          className="px-3 py-1.5 border border-gray-700 rounded hover:bg-gray-900 disabled:opacity-50 text-gray-100"
+                        >
+                          <ChevronLeft className="w-4 h-4" />
+                        </button>
+                        {Array.from({ length: Math.min(5, savedTotalPages) }, (_, i) => {
+                          let pageNum;
+                          if (savedTotalPages <= 5) pageNum = i + 1;
+                          else if (savedGroupsPage <= 3) pageNum = i + 1;
+                          else if (savedGroupsPage >= savedTotalPages - 2) pageNum = savedTotalPages - 4 + i;
+                          else pageNum = savedGroupsPage - 2 + i;
+                          return (
+                            <button
+                              key={pageNum}
+                              onClick={() => setSavedGroupsPage(pageNum)}
+                              className={`px-3 py-1.5 rounded ${
+                                savedGroupsPage === pageNum ? 'bg-emerald-600 text-white' : 'border border-gray-700 hover:bg-gray-900 text-gray-100'
+                              }`}
+                            >
+                              {pageNum}
+                            </button>
+                          );
+                        })}
+                        <button
+                          onClick={() => setSavedGroupsPage(p => Math.min(savedTotalPages, p + 1))}
+                          disabled={savedGroupsPage === savedTotalPages || savedTotalPages === 0}
+                          className="px-3 py-1.5 border border-gray-700 rounded hover:bg-gray-900 disabled:opacity-50 text-gray-100"
+                        >
+                          <ChevronRight className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* ===== Tabela de GRUPOS DA API (paginada + filtro) — TEMA PRETO ===== */}
+              <div className="border border-gray-800 rounded-xl p-4 bg-black text-white">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <h4 className="font-semibold">Grupos da API (Evolution)</h4>
+                    <p className="text-xs text-gray-400">Pesquise, pagine e salve no banco.</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={availGroupsSearch}
+                      onChange={e => setAvailGroupsSearch(e.target.value)}
+                      placeholder="Pesquisar grupos da API..."
+                      className="px-3 py-2 rounded-lg text-sm w-64 border border-gray-700 bg-gray-900 text-gray-100 placeholder-gray-500"
+                    />
+                    <select
+                      value={availGroupsPerPage}
+                      onChange={e => setAvailGroupsPerPage(parseInt(e.target.value))}
+                      className="px-3 py-2 rounded-lg text-sm border border-gray-700 bg-gray-900 text-gray-100"
+                    >
+                      {[5,10,25,50].map(n => <option key={n} value={n}>{n}/página</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                {groupsLoading ? (
+                  <p className="text-sm text-gray-400 mt-3">Carregando...</p>
+                ) : pagedAvailGroups.length === 0 ? (
+                  <p className="text-sm text-gray-400 mt-3 italic">Nenhum grupo carregado. Use o botão acima para buscar.</p>
+                ) : (
+                  <>
+                    <div className="mt-3 overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-black border-b border-gray-800">
+                          <tr>
+                            <th className="text-left px-3 py-2 font-semibold text-gray-100">Nome</th>
+                            <th className="text-left px-3 py-2 font-semibold text-gray-100">ID</th>
+                            <th className="text-left px-3 py-2 font-semibold text-gray-100">Membros</th>
+                            <th className="text-left px-3 py-2 font-semibold text-gray-100">Ação</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-800 bg-black text-gray-100">
+                          {pagedAvailGroups.map(g => (
+                            <tr key={g.id} className="hover:bg-gray-900">
+                              <td className="px-3 py-2">{g.subject || '(sem nome)'}</td>
+                              <td className="px-3 py-2 font-mono text-xs break-all text-gray-300">{g.id}</td>
+                              <td className="px-3 py-2">{typeof g.size === 'number' ? g.size : '—'}</td>
+                              <td className="px-3 py-2">
+                                <button
+                                  onClick={async () => {
+                                    if (!userId) { showToast('Sessão inválida', 'error'); return; }
+                                    setSelectedGroupJid(g.id);
+                                    setSelectedGroupSubject(g.subject || '');
+                                    addLog(`Grupo selecionado: "${g.subject}" (${g.id})`, 'success');
+                                    // tenta salvar (ignora duplicado)
+                                    const { error } = await supabase.from('whatsapp_groups').insert({
+                                      user_id: userId,
+                                      instance_name: selectedInstance,
+                                      group_id: g.id,
+                                      group_subject: g.subject,
+                                      picture_url: g.pictureUrl || null,
+                                      size: typeof g.size === 'number' ? g.size : null
+                                    });
+                                    if (error) {
+                                      if ((error as any).code === '23505') {
+                                        addLog('Grupo já existe no banco (duplicado).', 'info');
+                                      } else {
+                                        addLog(`Erro ao salvar grupo: ${error.message}`, 'error');
+                                      }
+                                    } else {
+                                      addLog('Grupo salvo no banco', 'success');
+                                      // atualiza lista salvos
+                                      const { data, error: e2 } = await supabase
+                                        .from('whatsapp_groups')
+                                        .select('group_id, group_subject')
+                                        .eq('user_id', userId)
+                                        .eq('instance_name', selectedInstance)
+                                        .order('group_subject', { ascending: true });
+                                      if (!e2 && data) setDbGroups(data as DbGroup[]);
+                                    }
+                                    showToast('Selecionado (e salvo, se ainda não estava).', 'success');
+                                  }}
+                                  className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs hover:bg-emerald-700"
+                                >
+                                  Salvar & Selecionar
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Paginação grupos da API */}
+                    <div className="flex items-center justify-between mt-3 text-gray-300">
+                      <span className="text-xs">
+                        Mostrando {availStart + 1}–{Math.min(availEnd, filteredAvailGroups.length)} de {filteredAvailGroups.length}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => setAvailGroupsPage(p => Math.max(1, p - 1))}
+                          disabled={availGroupsPage === 1}
+                          className="px-3 py-1.5 border border-gray-700 rounded hover:bg-gray-900 disabled:opacity-50 text-gray-100"
+                        >
+                          <ChevronLeft className="w-4 h-4" />
+                        </button>
+                        {Array.from({ length: Math.min(5, availTotalPages) }, (_, i) => {
+                          let pageNum;
+                          if (availTotalPages <= 5) pageNum = i + 1;
+                          else if (availGroupsPage <= 3) pageNum = i + 1;
+                          else if (availGroupsPage >= availTotalPages - 2) pageNum = availTotalPages - 4 + i;
+                          else pageNum = availGroupsPage - 2 + i;
+                          return (
+                            <button
+                              key={pageNum}
+                              onClick={() => setAvailGroupsPage(pageNum)}
+                              className={`px-3 py-1.5 rounded ${
+                                availGroupsPage === pageNum ? 'bg-emerald-600 text-white' : 'border border-gray-700 hover:bg-gray-900 text-gray-100'
+                              }`}
+                            >
+                              {pageNum}
+                            </button>
+                          );
+                        })}
+                        <button
+                          onClick={() => setAvailGroupsPage(p => Math.min(availTotalPages, p + 1))}
+                          disabled={availGroupsPage === availTotalPages || availTotalPages === 0}
+                          className="px-3 py-1.5 border border-gray-700 rounded hover:bg-gray-900 disabled:opacity-50 text-gray-100"
+                        >
+                          <ChevronRight className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         </section>
 
-        {/* NOVA SESSÃO — Adicionar pessoas ao grupo */}
+        {/* Adicionar pessoas ao grupo */}
         <section className="bg-white rounded-xl shadow-lg p-6 border border-yellow-200">
           <h2 className="text-xl font-semibold text-emerald-800 mb-4 flex items-center gap-2">
             <Plus className="w-5 h-5" /> Adicionar pessoas ao grupo
           </h2>
 
-          {/* Seleção de instância base e grupo (grupo vem do banco da instância base) */}
+          {/* Seleção base */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Instância base</label>
@@ -1354,9 +1669,9 @@ const Dashboard = () => {
               >
                 <option value="">Selecione uma instância</option>
                 {instances
-                  .filter(i => i.status === 'connecting' || i.status === 'connected')
+                  .filter(i => i.status === 'connecting' || i.status === 'connected' || i.status === 'unknown')
                   .map(inst => (
-                    <option key={inst.id} value={inst.instance_name}>
+                    <option key={inst.id || inst.instance_name} value={inst.instance_name}>
                       {inst.instance_name} (+{inst.number})
                     </option>
                   ))}
@@ -1409,10 +1724,10 @@ const Dashboard = () => {
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {instances
-                    .filter(i => i.status === 'connecting' || i.status === 'connected')
+                    .filter(i => i.status === 'connecting' || i.status === 'connected' || i.status === 'unknown')
                     .map(inst => (
                       <button
-                        key={inst.id}
+                        key={inst.id || inst.instance_name}
                         type="button"
                         onClick={() => toggleInstanceForAdd(inst.instance_name)}
                         className={`px-3 py-2 rounded-lg text-xs font-medium border transition ${
@@ -1425,9 +1740,6 @@ const Dashboard = () => {
                       </button>
                     ))}
                 </div>
-                <p className="text-[11px] text-gray-500 mt-2">
-                  A(s) instância(s) selecionada(s) precisam ter permissão de adicionar no grupo.
-                </p>
               </div>
 
               <div>
@@ -1437,19 +1749,16 @@ const Dashboard = () => {
                   onChange={e => setDistributionMode(e.target.value as DistributionMode)}
                   className="w-full max-w-xs px-4 py-3 border-2 border-yellow-200 rounded-lg focus:ring-2 focus:ring-emerald-500 text-gray-900"
                 >
-                  <option value="sequential">Sequencial (1ª instância, depois 2ª, etc)</option>
-                  <option value="random">Aleatório (instância sorteada a cada lead)</option>
+                  <option value="sequential">Sequencial</option>
+                  <option value="random">Aleatório</option>
                 </select>
-                <p className="text-[11px] text-gray-500 mt-1">
-                  Isso ajuda a cadenciar inclusões e reduzir risco de bloqueio.
-                </p>
+                <p className="text-[11px] text-gray-500 mt-1">Ajuda a reduzir risco de bloqueio.</p>
               </div>
             </div>
           </div>
 
-          {/* Quantidade / Delay / Random Time (alinhado) */}
+          {/* Quantidade / Delay */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Quantidade */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Quantidade de leads</label>
               <input
@@ -1462,13 +1771,13 @@ const Dashboard = () => {
               />
             </div>
 
-            {/* Delay + random toggle inline (alinhado) */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
                 <Clock className="w-4 h-4" /> Atraso entre inclusões
               </label>
 
-              <div className="flex flex-col lg:flex-row lg:items-start gap-3">
+              <div className="flex flex-col gap-3">
+                {/* Controles fixos (desabilitados quando random ON) */}
                 <div className="flex gap-2">
                   <input
                     type="number"
@@ -1489,27 +1798,53 @@ const Dashboard = () => {
                   </select>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setAddRandom(v => !v)}
-                  className={`px-4 py-3 h-[46px] rounded-lg border font-medium text-sm transition whitespace-nowrap ${
-                    addRandom
-                      ? 'bg-emerald-600 text-white border-emerald-600'
-                      : 'bg-white text-gray-700 border-yellow-200 hover:bg-yellow-50'
-                  }`}
-                  title="Seleciona tempos aleatórios (1–5 min com segundos; às vezes apenas segundos)"
-                >
-                  {addRandom ? 'Random Time: ATIVO' : 'Random Time: DESATIVADO'}
-                </button>
+                {/* Botão toggle random */}
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setAddRandom(v => !v)}
+                    className={`px-4 py-3 h-[46px] rounded-lg border font-medium text-sm transition whitespace-nowrap ${
+                      addRandom
+                        ? 'bg-emerald-600 text-white border-emerald-600'
+                        : 'bg-white text-gray-700 border-yellow-200 hover:bg-yellow-50'
+                    }`}
+                    title="Usar atraso aleatório dentro de uma faixa (em segundos)"
+                  >
+                    {addRandom ? 'Random Time: ATIVO' : 'Random Time: DESATIVADO'}
+                  </button>
+
+                  {/* NOVO: faixa em segundos quando random ON */}
+                  {addRandom && (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <input
+                        type="number"
+                        min={1}
+                        value={randomMinSeconds}
+                        onChange={(e) => setRandomMinSeconds(Math.max(1, parseInt(e.target.value) || 1))}
+                        className="w-28 px-3 py-3 border-2 border-yellow-200 rounded-lg text-gray-900"
+                        placeholder="mín (s)"
+                      />
+                      <span className="text-sm text-gray-600">a</span>
+                      <input
+                        type="number"
+                        min={1}
+                        value={randomMaxSeconds}
+                        onChange={(e) => setRandomMaxSeconds(Math.max(1, parseInt(e.target.value) || 1))}
+                        className="w-28 px-3 py-3 border-2 border-yellow-200 rounded-lg text-gray-900"
+                        placeholder="máx (s)"
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
 
               <p className="text-xs text-gray-500 mt-2">
-                Defina 0 para sem espera (não recomendado).
+                Dica: 550s ≈ 9min10s e 950s ≈ 15min50s. Defina 0 para sem espera (não recomendado).
               </p>
             </div>
           </div>
 
-          {/* Concorrência + Botões iniciar/pausar */}
+          {/* Concorrência + Botões */}
           <div className="mt-4">
             <label className="block text-sm font-medium text-gray-700 mb-2">Concorrência (envios em paralelo)</label>
             <input
@@ -1520,7 +1855,7 @@ const Dashboard = () => {
               onChange={e => setAddConcurrency(Math.max(1, Math.min(10, parseInt(e.target.value) || 1)))}
               className="w-full max-w-xs px-4 py-3 border-2 border-yellow-200 rounded-lg focus:ring-2 focus:ring-emerald-500 text-gray-900"
             />
-            <p className="text-[11px] text-gray-500 mt-1">Aumente com cautela: concorrência alta pode acionar rate-limit.</p>
+            <p className="text-[11px] text-gray-500 mt-1">Use com cautela para evitar rate-limit.</p>
           </div>
 
           <div className="mt-6 flex flex-wrap gap-3">
@@ -1554,58 +1889,7 @@ const Dashboard = () => {
           </div>
         </section>
 
-        {/* Disparo (limpo) */}
-        <section className="bg-white rounded-xl shadow-lg p-6 border border-yellow-200">
-          <h2 className="text-xl font-semibold text-emerald-800 mb-4">💬 Disparo de Mensagens</h2>
-
-          <div className="mb-4 grid sm:grid-cols-3 gap-3">
-            <select
-              value={selectedInstance}
-              onChange={e => setSelectedInstance(e.target.value)}
-              className="px-4 py-3 border-2 border-yellow-200 rounded-lg focus:ring-2 focus:ring-emerald-500 text-gray-900"
-            >
-              <option value="">Selecione uma instância</option>
-              {instances
-                .filter(i => i.status === 'connecting' || i.status === 'connected')
-                .map(inst => (
-                  <option key={inst.id} value={inst.instance_name}>
-                    {inst.instance_name} (+{inst.number})
-                  </option>
-                ))}
-            </select>
-
-            <input
-              type="number"
-              min="1"
-              max={contacts.length}
-              value={leadsLimit}
-              onChange={e => setLeadsLimit(Math.max(1, parseInt(e.target.value) || 1))}
-              className="px-4 py-3 border-2 border-yellow-200 rounded-lg focus:ring-2 focus:ring-emerald-500 text-gray-900"
-              placeholder="Qtd de leads"
-            />
-
-            <div className="sm:col-span-3">
-              <textarea
-                placeholder="Digite sua mensagem aqui..."
-                value={messageTemplate}
-                onChange={e => setMessageTemplate(e.target.value)}
-                rows={4}
-                className="w-full px-4 py-3 border-2 border-yellow-200 rounded-lg focus:ring-2 focus:ring-emerald-500 text-gray-900 placeholder-gray-400"
-              />
-            </div>
-          </div>
-
-          <button
-            onClick={handleSendMessages}
-            disabled={loading || !selectedInstance || !messageTemplate}
-            className="w-full px-6 py-3 bg-emerald-700 text-white rounded-lg hover:bg-emerald-800 transition flex items-center justify-center gap-2 disabled:opacity-50 font-medium"
-          >
-            <Send className="w-5 h-5" />
-            Enviar para {Math.min(leadsLimit, contacts.length)} contato(s)
-          </button>
-        </section>
-
-        {/* Upload CSV Contatos */}
+        {/* Upload CSV */}
         <section className="bg-white rounded-xl shadow-lg p-6 border border-yellow-200">
           <h2 className="text-xl font-semibold text-emerald-800 mb-4">📤 Importar Contatos via CSV</h2>
 
@@ -1691,7 +1975,7 @@ const Dashboard = () => {
                 <Info className="w-8 h-8 text-yellow-700" />
               </div>
               <p className="text-gray-700 text-lg font-medium">Nenhum contato encontrado</p>
-              <p className="text-gray-500 text-sm mt-2">Importe contatos via CSV para começar a enviar</p>
+              <p className="text-gray-500 text-sm mt-2">Importe contatos via CSV para começar</p>
             </div>
           ) : (
             <>
@@ -1750,7 +2034,7 @@ const Dashboard = () => {
                 </table>
               </div>
 
-              {/* Paginação */}
+              {/* Paginação contatos */}
               {totalPages > 1 && (
                 <div className="flex items-center justify-between mt-6 pt-4 border-t border-yellow-100 flex-wrap gap-4">
                   <div className="text-sm text-gray-700">
