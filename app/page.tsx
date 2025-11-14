@@ -858,33 +858,46 @@ const Dashboard = () => {
     return sec * 1000;
   };
 
+  // (mantido caso queira reaproveitar depois no front)
   const getConfiguredDelayMs = (): number => {
     if (addRandom) return computeRandomDelayMs();
     const base = Math.max(0, Number(addDelayValue) || 0);
-    const seconds = (addDelayUnit === 'minutes' ? base * 60 : base);
+    const seconds = addDelayUnit === 'minutes' ? base * 60 : base;
     return Math.max(1, seconds) * 1000;
   };
 
+  // NOVO handleAddToGroup: apenas enfileira jobs na rota /api/add-to-group
   const handleAddToGroup = async () => {
-    if (!userId) { showToast('Sessão inválida', 'error'); return; }
-    if (!selectedGroupJid) { showToast('Selecione um grupo', 'error'); return; }
-
-    const chosenNames = multiInstancesMode ? instancesForAdd : [selectedInstance];
-    const instPool: WhatsAppInstance[] = chosenNames
-      .map(name => instances.find(i => i.instance_name === name))
-      .filter((i): i is WhatsAppInstance => Boolean(i && i.hash));
-
-    if (instPool.length === 0) {
-      showToast('Nenhuma instância válida selecionada para adicionar.', 'error');
-      addLog('Nenhuma instância válida no rodízio para adicionar.', 'error');
+    if (!userId) {
+      showToast('Sessão inválida', 'error');
+      return;
+    }
+    if (!selectedGroupJid) {
+      showToast('Selecione um grupo', 'error');
       return;
     }
 
+    // Seleção de instâncias efetivas (multi x single)
+    const effectiveInstances =
+      multiInstancesMode
+        ? instancesForAdd
+        : selectedInstance
+          ? [selectedInstance]
+          : [];
+
+    if (effectiveInstances.length === 0) {
+      showToast('Escolha ao menos uma instância para o rodízio.', 'error');
+      addLog('Nenhuma instância selecionada para rodízio/envio.', 'error');
+      return;
+    }
+
+    // Leads elegíveis (mesma lógica antiga)
     const eligible = contacts.filter(c =>
       !!c.telefone &&
       c.status_add_gp !== true &&
       (c.status || '').toLowerCase() !== 'added'
     );
+
     const toAdd = eligible.slice(0, Math.max(1, addLimit));
     if (toAdd.length === 0) {
       showToast('Nenhum lead elegível para adicionar ao grupo.', 'error');
@@ -892,153 +905,86 @@ const Dashboard = () => {
       return;
     }
 
+    // Jobs básicos (id + telefone normalizado)
+    const jobs = toAdd.map(c => {
+      const digits = (c.telefone || '').replace(/\D/g, '');
+      const phoneE164 = digits.startsWith('55') ? digits : `55${digits}`;
+      return {
+        contactId: c.id,
+        phone: phoneE164,
+      };
+    });
+
+    // Config que o worker vai respeitar
+    const delayConfig = {
+      delayMode: (addRandom ? 'random' : 'fixed') as 'random' | 'fixed',
+      delayUnit: addDelayUnit,
+      delayValue: addDelayValue,
+      randomMinSeconds,
+      randomMaxSeconds,
+    };
+
     setAddingToGroup(true);
     setAddPaused(false);
     addCtrl.current.paused = false;
     cancelAddRef.current = false;
 
     addLog(
-      `ADD Grupo iniciado: grupo="${selectedGroupSubject || selectedGroupJid}" | leads=${toAdd.length} | modo=${distributionMode} | concorrência=${addConcurrency}`,
+      `Enfileirando ${jobs.length} contato(s) para inclusão no grupo "${selectedGroupSubject || selectedGroupJid}" via worker (fila).`,
       'info'
     );
-    showToast('Iniciando inclusão no grupo...', 'info');
+    showToast(`Enfileirando ${jobs.length} contato(s) para inclusão em background...`, 'info');
 
-    let ok = 0, fail = 0;
-    let globalIndex = 0;
+    try {
+      const resp = await fetch('/api/add-to-group', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          groupId: selectedGroupJid,
+          groupSubject: selectedGroupSubject || null,
+          delayConfig,
+          jobs,
+          instances: effectiveInstances,
+          multiInstancesMode,
+          distributionMode,
+          concurrency: addConcurrency,
+        }),
+      });
 
-    const pickInstance = (idx: number) => {
-      if (instances.length === 0) return null;
-      const valid = instances
-        .filter(i => (multiInstancesMode ? instancesForAdd.includes(i.instance_name) : i.instance_name === selectedInstance))
-        .filter(i => i.status === 'connecting' || i.status === 'connected' || i.status === 'unknown')
-        .filter(i => !!i.hash);
+      const data = await resp.json().catch(() => ({} as any));
 
-      if (valid.length === 0) return null;
-      return distributionMode === 'sequential'
-        ? valid[idx % valid.length]
-        : valid[Math.floor(Math.random() * valid.length)];
-    };
-
-    const parseIsConnectionClosed = (status: number, text: string) => {
-      try {
-        const obj = JSON.parse(text);
-        const msgs = obj?.response?.message || obj?.message;
-        const flat = Array.isArray(msgs) ? msgs.join(' ').toLowerCase() : String(msgs || '').toLowerCase();
-        return status === 400 && flat.includes('connection closed');
-      } catch {
-        return status === 400 && text.toLowerCase().includes('connection closed');
+      if (!resp.ok) {
+        const msg = data?.error || 'Erro ao enfileirar inclusão';
+        addLog(`Erro ao enfileirar inclusão: ${msg}`, 'error');
+        showToast(msg, 'error');
+      } else {
+        const accepted = data?.accepted ?? jobs.length;
+        const failed = data?.failed ?? 0;
+        addLog(
+          `Jobs enfileirados na fila: sucesso=${accepted}, falhaFila=${failed}`,
+          failed > 0 ? 'error' : 'success'
+        );
+        showToast(
+          `Inclusão iniciada em background. Enfileirados: ${accepted}${failed ? ` | falha na fila: ${failed}` : ''}`,
+          failed ? 'error' : 'success'
+        );
       }
-    };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      addLog(`Erro ao enviar jobs para a fila: ${msg}`, 'error');
+      showToast('Erro ao enviar jobs para a fila', 'error');
+    } finally {
+      setAddingToGroup(false);
+      setAddPaused(false);
+      addCtrl.current.paused = false;
+      cancelAddRef.current = false;
 
-    const worker = async (wid: number) => {
-      while (true) {
-        if (cancelAddRef.current) break;
-
-        const idx = globalIndex++;
-        if (idx >= toAdd.length) break;
-
-        await waitIfAddPaused();
-
-        const c = toAdd[idx];
-        const digits = (c.telefone || '').replace(/\D/g, '');
-        const numberE164 = digits.startsWith('55') ? digits : `55${digits}`;
-
-        let attempts = 0;
-        let success = false;
-
-        while (attempts < 3 && !success && !cancelAddRef.current) {
-          await waitIfAddPaused();
-          attempts++;
-
-          const instObj = pickInstance(idx);
-          if (!instObj) {
-            cancelAddRef.current = true;
-            addLog('Inclusão abortada — sem instâncias ativas.', 'error');
-            showToast('Todas as instâncias caíram. Inclusão abortada.', 'error');
-            break;
-          }
-
-          try {
-            const url = `${EVOLUTION_BASE}/group/updateParticipant/${instObj.instance_name}?groupJid=${encodeURIComponent(selectedGroupJid)}`;
-            const body = { action: 'add', participants: [numberE164] };
-
-            const resp = await fetch(url, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', apikey: instObj.hash as string },
-              body: JSON.stringify(body)
-            });
-
-            const txt = await resp.text().catch(() => '');
-
-            if (parseIsConnectionClosed(resp.status, txt)) {
-              await markInstanceDisconnected(instObj.instance_name);
-              attempts = 0;
-              continue;
-            }
-
-            if (resp.ok) {
-              ok++;
-              addLog(`✅ [${instObj.instance_name}] (${wid}) Adicionado ${numberE164} ao grupo.`, 'success');
-
-              const { error: upErr } = await supabase
-                .from('searches')
-                .update({ status_add_gp: true, status: 'added', updated_at: new Date().toISOString() })
-                .eq('user_id', userId!)
-                .eq('id', c.id);
-              if (upErr) addLog(`Falhou atualizar status do contato ${c.id}: ${upErr.message}`, 'error');
-
-              success = true;
-            } else {
-              const lowerTxt = (txt || '').toLowerCase();
-              const isRate = resp.status === 429 || lowerTxt.includes('rate-overlimit') || lowerTxt.includes('too many') || lowerTxt.includes('limit');
-              if (isRate && attempts < 3) {
-                const base = Math.max(getConfiguredDelayMs(), 2000);
-                const jitter = 1000 + Math.random() * 2000;
-                const wait = base + jitter;
-                addLog(`⚠️ Rate-limit. Backoff ${(wait / 1000).toFixed(1)}s (tentativa ${attempts}/3)`, 'info');
-                await sleep(wait);
-                continue;
-              }
-              fail++;
-              addLog(`❌ Falha ao adicionar ${numberE164}. HTTP ${resp.status} | ${txt}`, 'error');
-              break;
-            }
-          } catch (e) {
-            if (attempts < 3) {
-              const wait = Math.max(getConfiguredDelayMs(), 2000);
-              addLog(`⚠️ Exceção. Retentando em ${(wait / 1000).toFixed(1)}s (tentativa ${attempts}/3).`, 'info');
-              await sleep(wait);
-            } else {
-              fail++;
-              addLog(`❌ Erro final: ${String(e)}`, 'error');
-            }
-          }
-        }
-
-        const waitMs = getConfiguredDelayMs();
-        addLog(`⏳ aguardando ${(waitMs / 1000).toFixed(1)}s...`, 'info');
-        await sleep(waitMs);
-      }
-    };
-
-    const N = Math.max(1, Math.min(addConcurrency, toAdd.length));
-    await Promise.all(Array.from({ length: N }, (_, i) => worker(i)));
-
-    setAddingToGroup(false);
-    setAddPaused(false);
-    addCtrl.current.paused = false;
-
-    if (!cancelAddRef.current) {
-      addLog(`Inclusão finalizada. Sucesso=${ok} | Falhas=${fail}`, 'info');
-      showToast(`Inclusão finalizada — Sucesso: ${ok} | Falhas: ${fail}`, fail === 0 ? 'success' : 'error');
-    } else {
-      addLog(`Inclusão interrompida. Parcial — Sucesso=${ok} | Falhas=${fail}`, 'error');
+      // Dá um tempinho e recarrega o Supabase para ver status atualizado pelo worker
+      setTimeout(() => {
+        loadInitialData();
+      }, 3000);
     }
-
-    setKpiAdded(prev => prev + ok);
-    setKpiFailedAdds(prev => prev + fail);
-
-    loadInitialData();
   };
 
   const togglePauseAdd = () => {
@@ -1067,6 +1013,67 @@ const Dashboard = () => {
     link.click();
     showToast('CSV exportado com sucesso!', 'success');
   };
+
+    // ========= Ações de Contatos =========
+  const handleClearContactsLocal = () => {
+    if (contacts.length === 0) {
+      showToast('Não há contatos para limpar', 'info');
+      return;
+    }
+
+    const confirmClear = window.confirm(
+      'Isso vai LIMPAR a lista de contatos da TELA, mas NÃO vai apagar do Supabase.\n\nDeseja continuar?'
+    );
+    if (!confirmClear) return;
+
+    setContacts([]);
+    setKpiPending(0);
+
+    showToast('Lista de contatos limpa apenas na tela.', 'success');
+    addLog('Lista de contatos limpa apenas no frontend (sem deletar Supabase).', 'info');
+  };
+
+  const handleDeleteContactsSupabase = async () => {
+    if (!userId) {
+      showToast('Sessão inválida', 'error');
+      return;
+    }
+    if (contacts.length === 0) {
+      showToast('Não há contatos para deletar', 'info');
+      return;
+    }
+
+    const confirmDelete = window.confirm(
+      'Tem certeza que deseja DELETAR todos os contatos deste usuário na tabela "searches" do Supabase?\n\nESSA AÇÃO NÃO PODE SER DESFEITA.'
+    );
+    if (!confirmDelete) return;
+
+    try {
+      const { error } = await supabase
+        .from('searches')
+        .delete()
+        .eq('user_id', userId);
+
+      if (error) {
+        addLog(`Erro ao deletar contatos no Supabase: ${error.message}`, 'error');
+        showToast('Erro ao deletar contatos no Supabase', 'error');
+        return;
+      }
+
+      setContacts([]);
+      setKpiSent(0);
+      setKpiAdded(0);
+      setKpiPending(0);
+
+      addLog('Todos os contatos foram deletados no Supabase para este usuário.', 'success');
+      showToast('Contatos deletados no Supabase.', 'success');
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      addLog(`Exceção ao deletar contatos no Supabase: ${msg}`, 'error');
+      showToast('Erro inesperado ao deletar contatos', 'error');
+    }
+  };
+
 
   // ========= Tabela — contatos =========
   const filteredContacts = contacts;
@@ -1958,6 +1965,7 @@ const Dashboard = () => {
                 <RefreshCw className="w-4 h-4" />
                 Atualizar
               </button>
+
               <button
                 onClick={handleExportCSV}
                 disabled={contacts.length === 0}
@@ -1966,8 +1974,30 @@ const Dashboard = () => {
                 <Download className="w-5 h-5" />
                 Exportar CSV
               </button>
+
+              {/* 🔹 Limpa só a lista da tela (não deleta no Supabase) */}
+              <button
+                onClick={handleClearContactsLocal}
+                disabled={contacts.length === 0}
+                className="px-4 py-2 bg-white text-gray-800 border border-yellow-300 rounded-lg hover:bg-yellow-50 transition flex items-center gap-2 disabled:opacity-50"
+              >
+                <X className="w-4 h-4" />
+                Limpar lista
+              </button>
+
+              {/* 🔹 Deleta de fato no Supabase */}
+              <button
+                onClick={handleDeleteContactsSupabase}
+                disabled={contacts.length === 0}
+                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition flex items-center gap-2 disabled:opacity-50"
+              >
+                <Trash2 className="w-4 h-4" />
+                Deletar no Supabase
+              </button>
             </div>
           </div>
+
+
 
           {contacts.length === 0 ? (
             <div className="text-center py-12 bg-yellow-50 rounded-lg border border-yellow-100">
