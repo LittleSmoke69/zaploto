@@ -9,11 +9,11 @@ import { evolutionService } from '@/lib/services/evolution-service';
  */
 export async function GET(
   req: NextRequest,
-  { params }: { params: { instanceName: string } }
+  { params }: { params: Promise<{ instanceName: string }> }
 ) {
   try {
     const { userId } = await requireAuth(req);
-    const { instanceName } = params;
+    const { instanceName } = await params;
 
     const { data, error } = await supabaseServiceRole
       .from('whatsapp_instances')
@@ -37,11 +37,11 @@ export async function GET(
  */
 export async function DELETE(
   req: NextRequest,
-  { params }: { params: { instanceName: string } }
+  { params }: { params: Promise<{ instanceName: string }> }
 ) {
   try {
     const { userId } = await requireAuth(req);
-    const { instanceName } = params;
+    const { instanceName } = await params;
 
     // Busca a instância
     const { data: instance, error: fetchError } = await supabaseServiceRole

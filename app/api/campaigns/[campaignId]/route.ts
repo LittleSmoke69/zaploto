@@ -8,11 +8,11 @@ import { supabaseServiceRole } from '@/lib/services/supabase-service';
  */
 export async function GET(
   req: NextRequest,
-  { params }: { params: { campaignId: string } }
+  { params }: { params: Promise<{ campaignId: string }> }
 ) {
   try {
     const { userId } = await requireAuth(req);
-    const { campaignId } = params;
+    const { campaignId } = await params;
 
     const { data, error } = await supabaseServiceRole
       .from('campaigns')
@@ -36,11 +36,11 @@ export async function GET(
  */
 export async function PATCH(
   req: NextRequest,
-  { params }: { params: { campaignId: string } }
+  { params }: { params: Promise<{ campaignId: string }> }
 ) {
   try {
     const { userId } = await requireAuth(req);
-    const { campaignId } = params;
+    const { campaignId } = await params;
     const body = await req.json();
     const { status, processedContacts, failedContacts } = body;
 
