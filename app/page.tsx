@@ -866,7 +866,7 @@ const Dashboard = () => {
     return Math.max(1, seconds) * 1000;
   };
 
-  // NOVO handleAddToGroup: apenas enfileira jobs na rota /api/add-to-group
+  // handleAddToGroup: envia dados via webhook
   const handleAddToGroup = async () => {
     if (!userId) {
       showToast('Sessão inválida', 'error');
@@ -915,7 +915,7 @@ const Dashboard = () => {
       };
     });
 
-    // Config que o worker vai respeitar
+    // Config que será enviada via webhook
     const delayConfig = {
       delayMode: (addRandom ? 'random' : 'fixed') as 'random' | 'fixed',
       delayUnit: addDelayUnit,
@@ -924,63 +924,143 @@ const Dashboard = () => {
       randomMaxSeconds,
     };
 
+    // Estratégia completa para envio via webhook
+    const strategy = {
+      delayConfig,
+      distributionMode,
+      concurrency: addConcurrency,
+      multiInstancesMode,
+      instances: effectiveInstances,
+    };
+
     setAddingToGroup(true);
     setAddPaused(false);
     addCtrl.current.paused = false;
     cancelAddRef.current = false;
 
     addLog(
-      `Enfileirando ${jobs.length} contato(s) para inclusão no grupo "${selectedGroupSubject || selectedGroupJid}" via worker (fila).`,
+      `Criando campanha para ${jobs.length} contato(s) no grupo "${selectedGroupSubject || selectedGroupJid}"...`,
       'info'
     );
-    showToast(`Enfileirando ${jobs.length} contato(s) para inclusão em background...`, 'info');
+    showToast(`Criando campanha...`, 'info');
 
+    let campaignId: string | null = null;
+    
     try {
-      const resp = await fetch('/api/add-to-group', {
+      // Cria a campanha no banco de dados
+      const { data: campaign, error: campaignError } = await supabase
+        .from('campaigns')
+        .insert({
+          user_id: userId,
+          group_id: selectedGroupJid,
+          group_subject: selectedGroupSubject || null,
+          status: 'pending',
+          total_contacts: jobs.length,
+          processed_contacts: 0,
+          failed_contacts: 0,
+          strategy: strategy as any,
+          instances: effectiveInstances,
+        })
+        .select()
+        .single();
+
+      if (campaignError || !campaign) {
+        throw new Error(campaignError?.message || 'Erro ao criar campanha');
+      }
+
+      campaignId = campaign.id;
+      addLog(`Campanha criada com ID: ${campaign.id}`, 'success');
+      addLog(
+        `Enviando ${jobs.length} contato(s) para inclusão no grupo "${selectedGroupSubject || selectedGroupJid}" via webhook (backend).`,
+        'info'
+      );
+      showToast(`Enviando ${jobs.length} contato(s) via webhook...`, 'info');
+
+      // Extrai apenas os telefones para envio
+      const telefones = jobs.map(j => j.phone);
+
+      const payload = {
+        campaignId: campaignId!,
+        userId,
+        groupId: selectedGroupJid,
+        groupSubject: selectedGroupSubject || null,
+        strategy,
+        telefones,
+        jobs, // Mantém jobs completo caso o webhook precise dos IDs também
+      };
+
+      // Chama a rota API do backend que fará o envio do webhook
+      const resp = await fetch('/api/send-webhook', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId,
-          groupId: selectedGroupJid,
-          groupSubject: selectedGroupSubject || null,
-          delayConfig,
-          jobs,
-          instances: effectiveInstances,
-          multiInstancesMode,
-          distributionMode,
-          concurrency: addConcurrency,
-        }),
+        body: JSON.stringify(payload),
       });
 
       const data = await resp.json().catch(() => ({} as any));
 
       if (!resp.ok) {
-        const msg = data?.error || 'Erro ao enfileirar inclusão';
-        addLog(`Erro ao enfileirar inclusão: ${msg}`, 'error');
-        showToast(msg, 'error');
+        const msg = data?.error || data?.message || `Erro HTTP ${resp.status}`;
+        addLog(`Erro ao enviar via webhook: ${msg}`, 'error');
+        showToast(`Erro ao enviar via webhook: ${msg}`, 'error');
+        
+        // Atualiza status da campanha para 'failed'
+        if (campaignId) {
+          await supabase
+            .from('campaigns')
+            .update({ 
+              status: 'failed',
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', campaignId);
+        }
       } else {
-        const accepted = data?.accepted ?? jobs.length;
-        const failed = data?.failed ?? 0;
+        // Atualiza status da campanha para 'running' e started_at
+        if (campaignId) {
+          await supabase
+            .from('campaigns')
+            .update({ 
+              status: 'running',
+              started_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', campaignId);
+        }
+        
         addLog(
-          `Jobs enfileirados na fila: sucesso=${accepted}, falhaFila=${failed}`,
-          failed > 0 ? 'error' : 'success'
+          `Dados enviados via webhook com sucesso. Campanha ${campaignId} iniciada. ${jobs.length} contato(s) processado(s).`,
+          'success'
         );
         showToast(
-          `Inclusão iniciada em background. Enfileirados: ${accepted}${failed ? ` | falha na fila: ${failed}` : ''}`,
-          failed ? 'error' : 'success'
+          `Campanha iniciada! ${jobs.length} contato(s) enviados via webhook`,
+          'success'
         );
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      addLog(`Erro ao enviar jobs para a fila: ${msg}`, 'error');
-      showToast('Erro ao enviar jobs para a fila', 'error');
+      addLog(`Erro ao enviar dados via webhook: ${msg}`, 'error');
+      showToast('Erro ao enviar dados via webhook', 'error');
+      
+      // Atualiza status da campanha para 'failed' em caso de erro
+      if (campaignId) {
+        try {
+          await supabase
+            .from('campaigns')
+            .update({ 
+              status: 'failed',
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', campaignId);
+        } catch (updateError) {
+          console.error('Erro ao atualizar status da campanha:', updateError);
+        }
+      }
     } finally {
       setAddingToGroup(false);
       setAddPaused(false);
       addCtrl.current.paused = false;
       cancelAddRef.current = false;
 
-      // Dá um tempinho e recarrega o Supabase para ver status atualizado pelo worker
+      // Dá um tempinho e recarrega o Supabase para ver status atualizado
       setTimeout(() => {
         loadInitialData();
       }, 3000);

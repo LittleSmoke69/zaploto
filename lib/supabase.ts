@@ -1,9 +1,7 @@
-import { createClient } from '@supabase/supabase-js'
+// Re-export do serviço Supabase para compatibilidade com código existente
+export { supabase } from '@/lib/services/supabase-service';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
-
-export const supabase = createClient(supabaseUrl, supabaseKey)
+// Mantém a interface Database para tipos TypeScript
 
 export interface Database {
   public: {
@@ -185,6 +183,57 @@ export interface Database {
           password_hash?: string;
           created_at?: string;
           updated_at?: string | null;
+        };
+      };
+
+      campaigns: {
+        Row: {
+          id: string;
+          user_id: string;
+          group_id: string;
+          group_subject: string | null;
+          status: string; // 'pending' | 'running' | 'completed' | 'failed' | 'paused'
+          total_contacts: number;
+          processed_contacts: number;
+          failed_contacts: number;
+          strategy: Record<string, any>; // JSON com delayConfig, distributionMode, etc
+          instances: string[]; // Array de nomes de instâncias
+          created_at: string;
+          updated_at: string;
+          started_at: string | null;
+          completed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          group_id: string;
+          group_subject?: string | null;
+          status?: string;
+          total_contacts: number;
+          processed_contacts?: number;
+          failed_contacts?: number;
+          strategy: Record<string, any>;
+          instances: string[];
+          created_at?: string;
+          updated_at?: string;
+          started_at?: string | null;
+          completed_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          group_id?: string;
+          group_subject?: string | null;
+          status?: string;
+          total_contacts?: number;
+          processed_contacts?: number;
+          failed_contacts?: number;
+          strategy?: Record<string, any>;
+          instances?: string[];
+          created_at?: string;
+          updated_at?: string;
+          started_at?: string | null;
+          completed_at?: string | null;
         };
       };
     };

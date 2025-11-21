@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "concurrently -k -n WEB,WORKER \"next dev\" \"node utils/add-group-worker.js\"",
+    "dev": "next dev",
     "build": "next build",
     "start": "next start"
   
