@@ -62,6 +62,7 @@ export interface DelayConfig {
 
 export interface CampaignStrategy {
   delayConfig: DelayConfig;
+  randomTimer: boolean; // Indica se o random timer está ativo
   distributionMode: DistributionMode;
   concurrency: number;
   multiInstancesMode: boolean;

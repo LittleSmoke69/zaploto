@@ -919,7 +919,7 @@ const Dashboard = () => {
     const delayConfig = {
       delayMode: (addRandom ? 'random' : 'fixed') as 'random' | 'fixed',
       delayUnit: addDelayUnit,
-      delayValue: addDelayValue,
+      delayValue: addDelayValue, // Sempre envia o valor, mesmo quando random está ativo
       randomMinSeconds,
       randomMaxSeconds,
     };
@@ -927,6 +927,7 @@ const Dashboard = () => {
     // Estratégia completa para envio via webhook
     const strategy = {
       delayConfig,
+      randomTimer: addRandom, // Campo booleano indicando se random timer está ativo
       distributionMode,
       concurrency: addConcurrency,
       multiInstancesMode,
