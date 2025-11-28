@@ -75,22 +75,50 @@ export default function RegisterPage() {
           ],
           { onConflict: 'email', ignoreDuplicates: false }
         )
-        .select('user_id, email')
+        .select('id, user_id, email')
         .single();
 
-      if (insertErr || !inserted?.user_id) {
+      if (insertErr || (!inserted?.id && !inserted?.user_id)) {
         console.error('[REGISTER] insertErr:', insertErr);
         setErrorMsg(insertErr?.message || 'Erro ao salvar o perfil.');
         setLoading(false);
         return;
       }
 
-      // 5) Sessão curta (fecha o navegador ⇒ volta pro login)
+      // Obtém o ID do usuário (pode ser 'id' ou 'user_id' dependendo da estrutura)
+      const userId = inserted.id || inserted.user_id;
+
+      // 5) Cria configurações padrão do usuário (user_settings)
+      // O trigger também faz isso automaticamente, mas garantimos aqui como fallback
+      const { error: settingsErr } = await supabase
+        .from('user_settings')
+        .upsert(
+          [
+            {
+              user_id: userId, // Usa o ID retornado (id ou user_id)
+              max_leads_per_day: 100,
+              max_instances: 20,
+              is_admin: false,
+              is_active: true,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+          ],
+          { onConflict: 'user_id', ignoreDuplicates: false }
+        );
+
+      if (settingsErr) {
+        console.warn('[REGISTER] Erro ao criar user_settings (pode ser que o trigger já tenha criado):', settingsErr);
+        // Não bloqueia o registro se falhar, pois o trigger pode ter criado
+      }
+
+      // 6) Sessão curta (fecha o navegador ⇒ volta pro login)
       if (typeof window !== 'undefined') {
-        sessionStorage.setItem('user_id', inserted.user_id);
+        sessionStorage.setItem('user_id', userId);
+        sessionStorage.setItem('profile_id', userId);
         sessionStorage.setItem('email', inserted.email);
         // cookie de sessão (sem Max-Age) para middleware
-        document.cookie = `user_id=${inserted.user_id}; Path=/; SameSite=Lax`;
+        document.cookie = `user_id=${userId}; Path=/; SameSite=Lax`;
       }
 
       setSuccessMsg('Conta criada com sucesso!');

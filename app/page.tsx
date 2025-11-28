@@ -849,6 +849,215 @@ const Dashboard = () => {
 
   // ========= Adicionar pessoas ao grupo =========
 
+  // Refs para controlar polling de campanhas
+  const campaignPollingRefs = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  
+  // Estado para campanhas ativas
+  const [activeCampaigns, setActiveCampaigns] = useState<any[]>([]);
+
+  // Função para excluir campanha
+  const deleteCampaign = async (campaignId: string, groupSubject: string) => {
+    if (!userId) {
+      showToast('Sessão inválida', 'error');
+      return;
+    }
+
+    const confirmMessage = `Tem certeza que deseja excluir a campanha do grupo "${groupSubject}"?\n\nEsta ação não pode ser desfeita.`;
+    if (!confirm(confirmMessage)) {
+      return;
+    }
+
+    try {
+      addLog(`🗑️ Excluindo campanha ${campaignId}...`, 'info');
+      
+      const resp = await fetch(`/api/campaigns/${campaignId}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-Id': userId,
+        },
+      });
+
+      const data = await resp.json().catch(() => ({} as any));
+
+      if (!resp.ok) {
+        const msg = data?.error || data?.message || `Erro HTTP ${resp.status}`;
+        addLog(`Erro ao excluir campanha: ${msg}`, 'error');
+        showToast(`Erro ao excluir campanha: ${msg}`, 'error');
+        return;
+      }
+
+      addLog(`✅ Campanha excluída com sucesso!`, 'success');
+      showToast('Campanha excluída com sucesso!', 'success');
+
+      // Atualiza lista de campanhas
+      loadActiveCampaigns();
+      loadInitialData();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      addLog(`Erro ao excluir campanha: ${msg}`, 'error');
+      showToast('Erro ao excluir campanha', 'error');
+    }
+  };
+
+  // Função para pausar/retomar campanha
+  const toggleCampaignPause = async (campaignId: string, currentStatus: string) => {
+    if (!userId) {
+      showToast('Sessão inválida', 'error');
+      return;
+    }
+
+    const newStatus = currentStatus === 'paused' ? 'running' : 'paused';
+    const action = newStatus === 'paused' ? 'pausar' : 'retomar';
+
+    try {
+      addLog(`${action === 'pausar' ? '⏸️' : '▶️'} ${action.charAt(0).toUpperCase() + action.slice(1)} campanha ${campaignId}...`, 'info');
+      
+      const resp = await fetch(`/api/campaigns/${campaignId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-Id': userId,
+        },
+        body: JSON.stringify({ status: newStatus }),
+      });
+
+      const data = await resp.json().catch(() => ({} as any));
+
+      if (!resp.ok) {
+        const msg = data?.error || data?.message || `Erro HTTP ${resp.status}`;
+        addLog(`Erro ao ${action} campanha: ${msg}`, 'error');
+        showToast(`Erro ao ${action} campanha: ${msg}`, 'error');
+        return;
+      }
+
+      addLog(
+        `✅ Campanha ${action === 'pausar' ? 'pausada' : 'retomada'} com sucesso!`,
+        'success'
+      );
+      showToast(`Campanha ${action === 'pausar' ? 'pausada' : 'retomada'}!`, 'success');
+
+      // Atualiza lista de campanhas
+      loadActiveCampaigns();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      addLog(`Erro ao ${action} campanha: ${msg}`, 'error');
+      showToast(`Erro ao ${action} campanha`, 'error');
+    }
+  };
+
+  // Função para carregar campanhas ativas
+  const loadActiveCampaigns = useCallback(async () => {
+    if (!userId) return;
+    
+    try {
+      const { data: campaigns, error } = await supabase
+        .from('campaigns')
+        .select('*')
+        .eq('user_id', userId)
+        .in('status', ['running', 'paused'])
+        .order('created_at', { ascending: false });
+
+      if (!error && campaigns) {
+        setActiveCampaigns(campaigns);
+      }
+    } catch (err) {
+      console.error('Erro ao carregar campanhas ativas:', err);
+    }
+  }, [userId]);
+
+  // Carrega campanhas ativas ao montar componente e periodicamente
+  useEffect(() => {
+    loadActiveCampaigns();
+    const interval = setInterval(loadActiveCampaigns, 5000); // Atualiza a cada 5 segundos
+    return () => clearInterval(interval);
+  }, [loadActiveCampaigns]);
+
+  // Função para acompanhar progresso da campanha em tempo real
+  const startCampaignPolling = (campaignId: string) => {
+    // Remove polling anterior se existir
+    const existingPoll = campaignPollingRefs.current.get(campaignId);
+    if (existingPoll) {
+      clearInterval(existingPoll);
+    }
+
+    // Inicia novo polling
+    const pollInterval = setInterval(async () => {
+      try {
+        const { data: campaign, error } = await supabase
+          .from('campaigns')
+          .select('status, processed_contacts, failed_contacts, total_contacts')
+          .eq('id', campaignId)
+          .single();
+
+        if (error || !campaign) {
+          clearInterval(pollInterval);
+          campaignPollingRefs.current.delete(campaignId);
+          return;
+        }
+
+        // Atualiza logs com progresso
+        const progress = campaign.processed_contacts + campaign.failed_contacts;
+        const total = campaign.total_contacts;
+        const percentage = total > 0 ? Math.round((progress / total) * 100) : 0;
+
+        // Para campanhas finalizadas, para o polling
+        if (campaign.status === 'completed' || campaign.status === 'failed') {
+          clearInterval(pollInterval);
+          campaignPollingRefs.current.delete(campaignId);
+          
+          if (campaign.status === 'completed') {
+            addLog(
+              `✅ Campanha ${campaignId} concluída! ${campaign.processed_contacts}/${total} adicionados com sucesso, ${campaign.failed_contacts} falharam.`,
+              'success'
+            );
+            showToast(
+              `Campanha concluída! ${campaign.processed_contacts} adicionados, ${campaign.failed_contacts} falharam`,
+              'success'
+            );
+          } else {
+            addLog(
+              `❌ Campanha ${campaignId} falhou. ${campaign.processed_contacts} processados, ${campaign.failed_contacts} falharam.`,
+              'error'
+            );
+            showToast('Campanha falhou', 'error');
+          }
+
+          // Recarrega dados e campanhas ativas
+          loadInitialData();
+          loadActiveCampaigns();
+          return;
+        }
+
+        // Atualiza lista de campanhas ativas quando status muda
+        if (campaign.status === 'paused' || campaign.status === 'running') {
+          loadActiveCampaigns();
+        }
+
+        // Log de progresso a cada 10% ou a cada 5 segundos
+        if (progress > 0 && (progress % Math.max(1, Math.floor(total / 10)) === 0 || progress === 1)) {
+          addLog(
+            `📊 Progresso: ${progress}/${total} (${percentage}%) - ${campaign.processed_contacts} sucesso, ${campaign.failed_contacts} falhas`,
+            'info'
+          );
+        }
+      } catch (err) {
+        console.error('Erro ao fazer polling da campanha:', err);
+      }
+    }, 3000); // Polling a cada 3 segundos
+
+    campaignPollingRefs.current.set(campaignId, pollInterval);
+
+    // Limpa polling após 30 minutos (timeout de segurança)
+    setTimeout(() => {
+      const poll = campaignPollingRefs.current.get(campaignId);
+      if (poll) {
+        clearInterval(poll);
+        campaignPollingRefs.current.delete(campaignId);
+      }
+    }, 30 * 60 * 1000);
+  };
+
   // NOVO: random com faixa [min,max] em segundos
   const computeRandomDelayMs = (): number => {
     let minS = Math.max(1, Math.floor(Number(randomMinSeconds) || 1));
@@ -891,11 +1100,12 @@ const Dashboard = () => {
       return;
     }
 
-    // Leads elegíveis (mesma lógica antiga)
+    // Leads elegíveis - APENAS contatos com status pendente
+    // Não processa leads que já foram tentados (status !== 'pending')
     const eligible = contacts.filter(c =>
       !!c.telefone &&
       c.status_add_gp !== true &&
-      (c.status || '').toLowerCase() !== 'added'
+      (c.status || '').toLowerCase() === 'pending' // APENAS status pendente
     );
 
     const toAdd = eligible.slice(0, Math.max(1, addLimit));
@@ -972,37 +1182,36 @@ const Dashboard = () => {
       campaignId = campaign.id;
       addLog(`Campanha criada com ID: ${campaign.id}`, 'success');
       addLog(
-        `Enviando ${jobs.length} contato(s) para inclusão no grupo "${selectedGroupSubject || selectedGroupJid}" via webhook (backend).`,
+        `Iniciando processamento de ${jobs.length} contato(s) no grupo "${selectedGroupSubject || selectedGroupJid}"...`,
         'info'
       );
-      showToast(`Enviando ${jobs.length} contato(s) via webhook...`, 'info');
+      showToast(`Iniciando campanha com ${jobs.length} contato(s)...`, 'info');
 
-      // Extrai apenas os telefones para envio
-      const telefones = jobs.map(j => j.phone);
+      // Valida userId antes de fazer a requisição
+      if (!userId) {
+        throw new Error('Usuário não autenticado. Faça login novamente.');
+      }
 
-      const payload = {
-        campaignId: campaignId!,
-        userId,
-        groupId: selectedGroupJid,
-        groupSubject: selectedGroupSubject || null,
-        strategy,
-        telefones,
-        jobs, // Mantém jobs completo caso o webhook precise dos IDs também
-      };
-
-      // Chama a rota API do backend que fará o envio do webhook
-      const resp = await fetch('/api/send-webhook', {
+      // Chama a nova API de processamento direto (substitui webhook)
+      const resp = await fetch('/api/campaigns/process', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-User-Id': userId, // Envia userId no header para autenticação
+        },
+        body: JSON.stringify({
+          campaignId: campaignId!,
+          jobs,
+          userId, // Também envia no body como fallback
+        }),
       });
 
       const data = await resp.json().catch(() => ({} as any));
 
       if (!resp.ok) {
         const msg = data?.error || data?.message || `Erro HTTP ${resp.status}`;
-        addLog(`Erro ao enviar via webhook: ${msg}`, 'error');
-        showToast(`Erro ao enviar via webhook: ${msg}`, 'error');
+        addLog(`Erro ao iniciar campanha: ${msg}`, 'error');
+        showToast(`Erro ao iniciar campanha: ${msg}`, 'error');
         
         // Atualiza status da campanha para 'failed'
         if (campaignId) {
@@ -1015,26 +1224,17 @@ const Dashboard = () => {
             .eq('id', campaignId);
         }
       } else {
-        // Atualiza status da campanha para 'running' e started_at
-        if (campaignId) {
-          await supabase
-            .from('campaigns')
-            .update({ 
-              status: 'running',
-              started_at: new Date().toISOString(),
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', campaignId);
-        }
-        
         addLog(
-          `Dados enviados via webhook com sucesso. Campanha ${campaignId} iniciada. ${jobs.length} contato(s) processado(s).`,
+          `Campanha ${campaignId} iniciada com sucesso! Processamento em andamento. ${jobs.length} contato(s) serão processados.`,
           'success'
         );
         showToast(
-          `Campanha iniciada! ${jobs.length} contato(s) enviados via webhook`,
+          `Campanha iniciada! Processando ${jobs.length} contato(s) em tempo real...`,
           'success'
         );
+        
+        // Inicia polling para acompanhar progresso
+        startCampaignPolling(campaignId);
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -2198,6 +2398,123 @@ const Dashboard = () => {
             </>
           )}
         </section>
+
+        {/* Campanhas Ativas */}
+        {activeCampaigns.length > 0 && (
+          <section className="bg-white rounded-xl shadow-lg p-6 border border-yellow-200">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-semibold text-emerald-800 flex items-center gap-2">
+                <BarChart3 className="w-6 h-6" />
+                Campanhas Ativas
+              </h2>
+              <button
+                onClick={loadActiveCampaigns}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition text-sm flex items-center gap-2"
+              >
+                <RefreshCw className="w-4 h-4" />
+                Atualizar
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {activeCampaigns.map((campaign) => {
+                const progress = campaign.processed_contacts + campaign.failed_contacts;
+                const total = campaign.total_contacts;
+                const percentage = total > 0 ? Math.round((progress / total) * 100) : 0;
+                const isPaused = campaign.status === 'paused';
+                const isRunning = campaign.status === 'running';
+
+                return (
+                  <div
+                    key={campaign.id}
+                    className={`p-4 rounded-lg border-2 ${
+                      isPaused
+                        ? 'bg-yellow-50 border-yellow-300'
+                        : isRunning
+                        ? 'bg-emerald-50 border-emerald-300'
+                        : 'bg-gray-50 border-gray-300'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-4 flex-wrap">
+                      <div className="flex-1 min-w-[200px]">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="font-semibold text-gray-800">
+                            {campaign.group_subject || campaign.group_id}
+                          </span>
+                          <span
+                            className={`px-2 py-1 rounded text-xs font-medium ${
+                              isPaused
+                                ? 'bg-yellow-200 text-yellow-800'
+                                : isRunning
+                                ? 'bg-emerald-200 text-emerald-800'
+                                : 'bg-gray-200 text-gray-800'
+                            }`}
+                          >
+                            {isPaused ? '⏸️ Pausada' : isRunning ? '▶️ Em execução' : campaign.status}
+                          </span>
+                        </div>
+                        <div className="text-sm text-gray-600 space-y-1">
+                          <div>
+                            <strong>ID:</strong> {campaign.id.substring(0, 8)}...
+                          </div>
+                          <div>
+                            <strong>Progresso:</strong> {progress}/{total} ({percentage}%)
+                          </div>
+                          <div>
+                            <strong>Sucesso:</strong> {campaign.processed_contacts} |{' '}
+                            <strong>Falhas:</strong> {campaign.failed_contacts}
+                          </div>
+                          <div>
+                            <strong>Instâncias:</strong> {campaign.instances?.length || 0}
+                          </div>
+                        </div>
+                        {/* Barra de progresso */}
+                        <div className="mt-3 w-full bg-gray-200 rounded-full h-2.5">
+                          <div
+                            className={`h-2.5 rounded-full transition-all ${
+                              isPaused ? 'bg-yellow-500' : 'bg-emerald-600'
+                            }`}
+                            style={{ width: `${percentage}%` }}
+                          ></div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => toggleCampaignPause(campaign.id, campaign.status)}
+                          className={`px-4 py-2 rounded-lg font-medium text-sm transition flex items-center gap-2 ${
+                            isPaused
+                              ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                              : 'bg-yellow-500 text-white hover:bg-yellow-600'
+                          }`}
+                        >
+                          {isPaused ? (
+                            <>
+                              <Play className="w-4 h-4" />
+                              Retomar
+                            </>
+                          ) : (
+                            <>
+                              <Pause className="w-4 h-4" />
+                              Pausar
+                            </>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => deleteCampaign(campaign.id, campaign.group_subject || campaign.group_id)}
+                          className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition text-sm font-medium flex items-center gap-2"
+                          title="Excluir campanha"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          Excluir
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         {/* Logs */}
         {logs.length > 0 && (

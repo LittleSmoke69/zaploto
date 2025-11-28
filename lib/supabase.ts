@@ -236,6 +236,39 @@ export interface Database {
           completed_at?: string | null;
         };
       };
+
+      user_settings: {
+        Row: {
+          id: string;
+          user_id: string;
+          max_leads_per_day: number;
+          max_instances: number;
+          is_admin: boolean;
+          is_active: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          max_leads_per_day?: number;
+          max_instances?: number;
+          is_admin?: boolean;
+          is_active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          max_leads_per_day?: number;
+          max_instances?: number;
+          is_admin?: boolean;
+          is_active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
     };
   };
 }

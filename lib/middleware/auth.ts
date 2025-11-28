@@ -7,35 +7,38 @@ export interface AuthUser {
 
 /**
  * Middleware para autenticação via headers ou query params
+ * Prioriza headers para evitar problemas com leitura do body
  */
 export async function authenticateRequest(req: NextRequest): Promise<AuthUser | null> {
-  // Tenta pegar do header Authorization
+  // Tenta pegar do header X-User-Id (prioridade 1 - RECOMENDADO)
+  const userIdHeader = req.headers.get('x-user-id');
+  if (userIdHeader?.trim()) {
+    return { userId: userIdHeader.trim() };
+  }
+
+  // Tenta pegar do header Authorization (prioridade 2)
   const authHeader = req.headers.get('authorization');
   if (authHeader?.startsWith('Bearer ')) {
-    const userId = authHeader.replace('Bearer ', '');
+    const userId = authHeader.replace('Bearer ', '').trim();
     if (userId) return { userId };
   }
 
-  // Tenta pegar do header X-User-Id
-  const userIdHeader = req.headers.get('x-user-id');
-  if (userIdHeader) {
-    return { userId: userIdHeader };
+  // Tenta pegar da query string (prioridade 3)
+  const userIdQuery = req.nextUrl.searchParams.get('userId');
+  if (userIdQuery?.trim()) {
+    return { userId: userIdQuery.trim() };
   }
 
-  // Tenta pegar do body (para POST/PUT)
+  // Tenta pegar do body (para POST/PUT) - última opção
+  // Só tenta se não encontrou nos headers/query
   try {
-    const body = await req.clone().json().catch(() => null);
+    const clonedReq = req.clone();
+    const body = await clonedReq.json().catch(() => null);
     if (body?.userId) {
-      return { userId: body.userId };
+      return { userId: String(body.userId).trim() };
     }
   } catch {
-    // Ignora erro de parsing
-  }
-
-  // Tenta pegar da query string
-  const userIdQuery = req.nextUrl.searchParams.get('userId');
-  if (userIdQuery) {
-    return { userId: userIdQuery };
+    // Ignora erro de parsing - pode ser que o body não seja JSON válido
   }
 
   return null;
