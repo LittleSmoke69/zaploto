@@ -120,8 +120,16 @@ const Dashboard = () => {
 
   // GRUPOS — Banco (salvos por instância)
   const [dbGroups, setDbGroups] = useState<DbGroup[]>([]);
-  const [selectedGroupJid, setSelectedGroupJid] = useState<string>('');
+  const [selectedGroupJid, setSelectedGroupJid] = useState<string>(''); // Mantido para compatibilidade
   const [selectedGroupSubject, setSelectedGroupSubject] = useState<string>('');
+  
+  // NOVO: Seleção múltipla de grupos
+  const [selectedGroups, setSelectedGroups] = useState<Array<{ jid: string; subject: string }>>([]);
+  
+  // NOVO: Modo de distribuição entre grupos
+  type GroupDistributionMode = 'random' | 'sequential' | 'equal';
+  const [groupDistributionMode, setGroupDistributionMode] = useState<GroupDistributionMode>('equal');
+  const [leadsPerGroup, setLeadsPerGroup] = useState<number>(0); // 0 = distribuir igualmente
 
   // ===== NOVO: Busca + Paginação (API) =====
   const [availGroupsSearch, setAvailGroupsSearch] = useState('');
@@ -1081,8 +1089,14 @@ const Dashboard = () => {
       showToast('Sessão inválida', 'error');
       return;
     }
-    if (!selectedGroupJid) {
-      showToast('Selecione um grupo', 'error');
+    
+    // NOVO: Suporta múltiplos grupos ou grupo único (compatibilidade)
+    const groupsToUse = selectedGroups.length > 0 
+      ? selectedGroups 
+      : (selectedGroupJid ? [{ jid: selectedGroupJid, subject: selectedGroupSubject }] : []);
+    
+    if (groupsToUse.length === 0) {
+      showToast('Selecione ao menos um grupo', 'error');
       return;
     }
 
@@ -1108,14 +1122,90 @@ const Dashboard = () => {
       (c.status || '').toLowerCase() === 'pending' // APENAS status pendente
     );
 
-    const toAdd = eligible.slice(0, Math.max(1, addLimit));
+    // NOVO: Calcula quantidade total de leads baseado na distribuição
+    let totalLeadsToAdd = addLimit;
+    if (groupsToUse.length > 1 && groupDistributionMode === 'equal' && leadsPerGroup > 0) {
+      totalLeadsToAdd = leadsPerGroup * groupsToUse.length;
+    }
+
+    const toAdd = eligible.slice(0, Math.max(1, totalLeadsToAdd));
     if (toAdd.length === 0) {
       showToast('Nenhum lead elegível para adicionar ao grupo.', 'error');
       addLog('Nenhum lead elegível para adicionar.', 'error');
       return;
     }
 
-    // Jobs básicos (id + telefone normalizado)
+    // NOVO: Distribui leads entre grupos conforme o modo escolhido
+    const distributeLeadsToGroups = (leads: typeof toAdd, groups: typeof groupsToUse) => {
+      const distribution: Array<{ group: typeof groupsToUse[0]; jobs: Array<{ contactId: string; phone: string }> }> = [];
+      
+      if (groups.length === 1) {
+        // Um único grupo: todos os leads vão para ele
+        const jobs = leads.map(c => {
+          const digits = (c.telefone || '').replace(/\D/g, '');
+          const phoneE164 = digits.startsWith('55') ? digits : `55${digits}`;
+          return { contactId: c.id, phone: phoneE164 };
+        });
+        distribution.push({ group: groups[0], jobs });
+      } else {
+        // Múltiplos grupos: distribui conforme o modo
+        if (groupDistributionMode === 'equal') {
+          // Divide igualmente ou por quantidade definida
+          const perGroup = leadsPerGroup > 0 
+            ? leadsPerGroup 
+            : Math.floor(leads.length / groups.length);
+          const remainder = leadsPerGroup > 0 ? 0 : leads.length % groups.length;
+          
+          let leadIndex = 0;
+          groups.forEach((group, groupIndex) => {
+            const count = perGroup + (groupIndex < remainder ? 1 : 0);
+            const groupLeads = leads.slice(leadIndex, leadIndex + count);
+            const jobs = groupLeads.map(c => {
+              const digits = (c.telefone || '').replace(/\D/g, '');
+              const phoneE164 = digits.startsWith('55') ? digits : `55${digits}`;
+              return { contactId: c.id, phone: phoneE164 };
+            });
+            distribution.push({ group, jobs });
+            leadIndex += count;
+          });
+        } else if (groupDistributionMode === 'sequential') {
+          // Sequencial: 1º lead no 1º grupo, 2º no 2º, etc (roda)
+          leads.forEach((lead, index) => {
+            const groupIndex = index % groups.length;
+            if (!distribution[groupIndex]) {
+              distribution[groupIndex] = { group: groups[groupIndex], jobs: [] };
+            }
+            const digits = (lead.telefone || '').replace(/\D/g, '');
+            const phoneE164 = digits.startsWith('55') ? digits : `55${digits}`;
+            distribution[groupIndex].jobs.push({ contactId: lead.id, phone: phoneE164 });
+          });
+        } else if (groupDistributionMode === 'random') {
+          // Aleatório: distribui aleatoriamente
+          const shuffledLeads = [...leads].sort(() => Math.random() - 0.5);
+          const perGroup = Math.floor(shuffledLeads.length / groups.length);
+          const remainder = shuffledLeads.length % groups.length;
+          
+          let leadIndex = 0;
+          groups.forEach((group, groupIndex) => {
+            const count = perGroup + (groupIndex < remainder ? 1 : 0);
+            const groupLeads = shuffledLeads.slice(leadIndex, leadIndex + count);
+            const jobs = groupLeads.map(c => {
+              const digits = (c.telefone || '').replace(/\D/g, '');
+              const phoneE164 = digits.startsWith('55') ? digits : `55${digits}`;
+              return { contactId: c.id, phone: phoneE164 };
+            });
+            distribution.push({ group, jobs });
+            leadIndex += count;
+          });
+        }
+      }
+      
+      return distribution;
+    };
+
+    const groupsDistribution = distributeLeadsToGroups(toAdd, groupsToUse);
+    
+    // Jobs básicos (mantido para compatibilidade, mas agora temos groupsDistribution)
     const jobs = toAdd.map(c => {
       const digits = (c.telefone || '').replace(/\D/g, '');
       const phoneE164 = digits.startsWith('55') ? digits : `55${digits}`;
@@ -1142,6 +1232,16 @@ const Dashboard = () => {
       concurrency: addConcurrency,
       multiInstancesMode,
       instances: effectiveInstances,
+      // NOVO: Informações sobre distribuição entre grupos
+      groupsDistribution: groupsToUse.length > 1 ? {
+        mode: groupDistributionMode,
+        leadsPerGroup: leadsPerGroup > 0 ? leadsPerGroup : null,
+        groups: groupsDistribution.map(d => ({
+          groupId: d.group.jid,
+          groupSubject: d.group.subject,
+          jobCount: d.jobs.length,
+        })),
+      } : null,
     };
 
     setAddingToGroup(true);
@@ -1149,8 +1249,13 @@ const Dashboard = () => {
     addCtrl.current.paused = false;
     cancelAddRef.current = false;
 
+    // NOVO: Cria uma campanha por grupo ou uma única campanha com múltiplos grupos
+    const groupInfo = groupsToUse.length === 1 
+      ? `${groupsToUse[0].subject || groupsToUse[0].jid}`
+      : `${groupsToUse.length} grupos`;
+    
     addLog(
-      `Criando campanha para ${jobs.length} contato(s) no grupo "${selectedGroupSubject || selectedGroupJid}"...`,
+      `Criando campanha para ${jobs.length} contato(s) em ${groupInfo}...`,
       'info'
     );
     showToast(`Criando campanha...`, 'info');
@@ -1158,13 +1263,87 @@ const Dashboard = () => {
     let campaignId: string | null = null;
     
     try {
-      // Cria a campanha no banco de dados
+      // NOVO: Se múltiplos grupos, cria uma campanha por grupo
+      if (groupsToUse.length > 1) {
+        const campaignPromises = groupsDistribution.map(async (dist) => {
+          if (dist.jobs.length === 0) return null;
+          
+          const { data: campaign, error: campaignError } = await supabase
+            .from('campaigns')
+            .insert({
+              user_id: userId,
+              group_id: dist.group.jid,
+              group_subject: dist.group.subject || null,
+              status: 'pending',
+              total_contacts: dist.jobs.length,
+              processed_contacts: 0,
+              failed_contacts: 0,
+              strategy: {
+                ...strategy,
+                parentCampaign: true, // Indica que faz parte de uma campanha múltipla
+              } as any,
+              instances: effectiveInstances,
+            })
+            .select()
+            .single();
+          
+          if (campaignError || !campaign) {
+            throw new Error(campaignError?.message || `Erro ao criar campanha para grupo ${dist.group.jid}`);
+          }
+          
+          return { campaign, jobs: dist.jobs, group: dist.group };
+        });
+        
+        const campaigns = (await Promise.all(campaignPromises)).filter(c => c !== null) as Array<{
+          campaign: any;
+          jobs: Array<{ contactId: string; phone: string }>;
+          group: { jid: string; subject: string };
+        }>;
+        
+        if (campaigns.length === 0) {
+          throw new Error('Nenhuma campanha foi criada');
+        }
+        
+        // Processa todas as campanhas
+        for (const { campaign, jobs: groupJobs, group } of campaigns) {
+          addLog(`Campanha criada para grupo "${group.subject || group.jid}": ${campaign.id}`, 'success');
+          
+          const resp = await fetch('/api/campaigns/process', {
+            method: 'POST',
+            headers: { 
+              'Content-Type': 'application/json',
+              'X-User-Id': userId,
+            },
+            body: JSON.stringify({
+              campaignId: campaign.id,
+              jobs: groupJobs,
+              userId,
+            }),
+          });
+          
+          const data = await resp.json().catch(() => ({} as any));
+          
+          if (!resp.ok) {
+            addLog(`Erro ao iniciar campanha ${campaign.id}: ${data?.error || data?.message}`, 'error');
+          } else {
+            addLog(`Campanha ${campaign.id} iniciada para grupo "${group.subject || group.jid}"`, 'success');
+            startCampaignPolling(campaign.id);
+          }
+        }
+        
+        showToast(`Campanhas criadas e iniciadas para ${campaigns.length} grupo(s)!`, 'success');
+        setAddingToGroup(false);
+        loadActiveCampaigns();
+        return;
+      }
+      
+      // Código original para um único grupo (mantido para compatibilidade)
       const { data: campaign, error: campaignError } = await supabase
         .from('campaigns')
         .insert({
           user_id: userId,
-          group_id: selectedGroupJid,
-          group_subject: selectedGroupSubject || null,
+          group_id: groupsToUse[0].jid,
+          group_subject: groupsToUse[0].subject || null,
           status: 'pending',
           total_contacts: jobs.length,
           processed_contacts: 0,
@@ -1182,7 +1361,7 @@ const Dashboard = () => {
       campaignId = campaign.id;
       addLog(`Campanha criada com ID: ${campaign.id}`, 'success');
       addLog(
-        `Iniciando processamento de ${jobs.length} contato(s) no grupo "${selectedGroupSubject || selectedGroupJid}"...`,
+        `Iniciando processamento de ${jobs.length} contato(s) no grupo "${groupsToUse[0].subject || groupsToUse[0].jid}"...`,
         'info'
       );
       showToast(`Iniciando campanha com ${jobs.length} contato(s)...`, 'info');
@@ -2045,6 +2224,52 @@ const Dashboard = () => {
             </div>
           </div>
 
+          {/* Distribuição entre grupos (só aparece se múltiplos grupos selecionados) */}
+          {selectedGroups.length > 1 && (
+            <div className="border border-blue-200 rounded-lg p-4 bg-blue-50/30 mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-3">
+                Distribuição entre grupos
+              </label>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Modo de distribuição</label>
+                  <select
+                    value={groupDistributionMode}
+                    onChange={e => setGroupDistributionMode(e.target.value as GroupDistributionMode)}
+                    className="w-full px-4 py-3 border-2 border-yellow-200 rounded-lg focus:ring-2 focus:ring-emerald-500 text-gray-900"
+                  >
+                    <option value="equal">Igual (divide igualmente entre grupos)</option>
+                    <option value="sequential">Sequencial (1º lead no 1º grupo, 2º no 2º, etc)</option>
+                    <option value="random">Aleatório (distribui aleatoriamente)</option>
+                  </select>
+                </div>
+                
+                {groupDistributionMode === 'equal' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Leads por grupo (0 = dividir igualmente)
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={leadsPerGroup}
+                      onChange={e => setLeadsPerGroup(Math.max(0, parseInt(e.target.value) || 0))}
+                      className="w-full px-4 py-3 border-2 border-yellow-200 rounded-lg focus:ring-2 focus:ring-emerald-500 text-gray-900"
+                      placeholder="0 = dividir igualmente"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      {leadsPerGroup > 0 
+                        ? `Cada grupo receberá ${leadsPerGroup} leads (total: ${leadsPerGroup * selectedGroups.length})`
+                        : `Os leads serão divididos igualmente entre os ${selectedGroups.length} grupos selecionados`
+                      }
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Quantidade / Delay */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
@@ -2057,6 +2282,11 @@ const Dashboard = () => {
                 onChange={e => setAddLimit(Math.max(1, parseInt(e.target.value) || 1))}
                 className="w-full px-4 py-3 border-2 border-yellow-200 rounded-lg focus:ring-2 focus:ring-emerald-500 text-gray-900"
               />
+              {selectedGroups.length > 1 && groupDistributionMode === 'equal' && leadsPerGroup > 0 && (
+                <p className="text-xs text-gray-500 mt-1">
+                  Total será ajustado para {leadsPerGroup * selectedGroups.length} leads ({leadsPerGroup} por grupo)
+                </p>
+              )}
             </div>
 
             <div>
@@ -2151,7 +2381,7 @@ const Dashboard = () => {
               onClick={handleAddToGroup}
               disabled={
                 addingToGroup ||
-                !selectedGroupJid ||
+                selectedGroups.length === 0 ||
                 (!multiInstancesMode
                   ? !selectedInstance
                   : instancesForAdd.length === 0)
