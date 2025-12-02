@@ -7,7 +7,6 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start"
-  
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.81.1",
@@ -19,7 +18,8 @@
     "node-fetch": "^3.3.2",
     "pm2": "^6.0.13",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "recharts": "^3.5.1"
   },
   "devDependencies": {
     "@netlify/plugin-nextjs": "^5.14.4",
@@ -28,6 +28,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "baseline-browser-mapping": "^2.8.32",
     "concurrently": "^9.2.1",
     "tailwindcss": "^4",
     "tsx": "^4.20.6",

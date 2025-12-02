@@ -4,12 +4,13 @@ import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import bcrypt from 'bcryptjs';
+import { Mail, Lock, LogIn, AlertCircle } from 'lucide-react';
 
 const LoginPage = () => {
   const router = useRouter();
-  const [email, setEmail]       = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [loading, setLoading]   = useState(false);
+  const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const setSessionArtifacts = (userId: string, userEmail: string) => {
@@ -90,65 +91,112 @@ const LoginPage = () => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-yellow-50 via-white to-green-50 px-4">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow-md p-8 border border-yellow-100">
-        <div className="flex justify-center mb-6">
-          <img
-            src="/zaploto-logo.png"
-            alt="ZapLoto"
-            className="h-16 w-auto drop-shadow-md"
-          />
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4 py-12">
+      <div className="w-full max-w-md">
+        {/* Logo e Título */}
+        <div className="text-center mb-8">
+          <div className="flex items-center justify-center gap-2 mb-4">
+            <span className="text-3xl font-bold text-gray-800">ZAP</span>
+            <span className="text-3xl font-bold text-emerald-500">LOTO</span>
+          </div>
+          <h1 className="text-2xl font-bold text-gray-800 mb-2">
+            Bem-vindo de volta
+          </h1>
+          <p className="text-gray-600 text-sm">
+            Entre com suas credenciais para acessar sua conta
+          </p>
         </div>
 
-        <h1 className="text-2xl font-extrabold text-center text-green-800 mb-4">
-          Acesse sua conta
-        </h1>
+        {/* Card de Login */}
+        <div className="bg-white rounded-xl shadow-lg p-8 border border-gray-200">
+          {errorMsg && (
+            <div className="mb-6 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 flex items-center gap-2">
+              <AlertCircle className="w-5 h-5 flex-shrink-0" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
 
-        {errorMsg && (
-          <div className="mb-4 rounded-lg bg-red-100 border border-red-300 text-red-700 text-sm px-4 py-2 text-center">
-            {errorMsg}
+          <form onSubmit={handleLogin} className="space-y-5">
+            {/* Email */}
+            <div>
+              <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
+                E-mail
+              </label>
+              <div className="relative">
+                <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                <input
+                  id="email"
+                  type="email"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  placeholder="seu@email.com"
+                  className="w-full pl-10 pr-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-gray-900 transition"
+                  disabled={loading}
+                  autoComplete="username"
+                  inputMode="email"
+                  required
+                />
+              </div>
+            </div>
+
+            {/* Senha */}
+            <div>
+              <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-2">
+                Senha
+              </label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                <input
+                  id="password"
+                  type="password"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full pl-10 pr-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-gray-900 transition"
+                  disabled={loading}
+                  autoComplete="current-password"
+                  required
+                />
+              </div>
+            </div>
+
+            {/* Botão Submit */}
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-3 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-md hover:shadow-lg"
+            >
+              {loading ? (
+                <>
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  <span>Entrando...</span>
+                </>
+              ) : (
+                <>
+                  <LogIn className="w-5 h-5" />
+                  <span>Entrar</span>
+                </>
+              )}
+            </button>
+          </form>
+
+          {/* Link para Registro */}
+          <div className="mt-6 text-center">
+            <p className="text-sm text-gray-600">
+              Não tem conta?{' '}
+              <a
+                href="/register"
+                className="text-emerald-600 hover:text-emerald-700 font-medium transition"
+              >
+                Criar conta
+              </a>
+            </p>
           </div>
-        )}
+        </div>
 
-        <form onSubmit={handleLogin} className="space-y-4">
-          <input
-            type="email"
-            value={email}
-            onChange={e => setEmail(e.target.value)}
-            placeholder="E-mail"
-            className="w-full px-4 py-3 border-2 border-yellow-200 rounded-lg focus:ring-2 focus:ring-green-500 text-gray-900"
-            disabled={loading}
-            autoComplete="username"
-            inputMode="email"
-          />
-
-          <input
-            type="password"
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            placeholder="Senha"
-            className="w-full px-4 py-3 border-2 border-yellow-200 rounded-lg focus:ring-2 focus:ring-green-500 text-gray-900"
-            disabled={loading}
-            autoComplete="current-password"
-          />
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-3 rounded-lg bg-gradient-to-r from-yellow-400 to-green-600 hover:from-yellow-500 hover:to-green-700 text-white font-semibold transition"
-          >
-            {loading ? 'Entrando...' : 'Entrar'}
-          </button>
-        </form>
-
-        <p className="text-center text-sm text-gray-600 mt-6">
-          Não tem conta?{' '}
-          <a
-            href="/register"
-            className="text-green-700 hover:text-green-800 font-medium"
-          >
-            Criar conta
-          </a>
+        {/* Footer */}
+        <p className="text-center text-xs text-gray-500 mt-6">
+          © 2025 ZAPLOTO. Todos os direitos reservados.
         </p>
       </div>
     </div>
