@@ -53,19 +53,18 @@ export async function POST(req: NextRequest) {
       hasQrcode: !!evolutionData.qrcode,
       qrcodeType: typeof evolutionData.qrcode,
       keys: Object.keys(evolutionData || {}),
-      instanceKeys: evolutionData.instance ? Object.keys(evolutionData.instance) : null,
     });
 
     // Extrai QR code de diferentes formatos possíveis
-    let qrCodeBase64 = evolutionData.qrcode?.base64 || 
-                      evolutionData.qrcode || 
-                      evolutionData.instance?.qrcode?.base64 ||
-                      evolutionData.instance?.qrcode ||
-                      null;
-
-    // Se o QR code é uma string, tenta extrair o base64 se estiver em um objeto
-    if (qrCodeBase64 && typeof qrCodeBase64 === 'object') {
-      qrCodeBase64 = qrCodeBase64.base64 || qrCodeBase64.data || null;
+    let qrCodeBase64: string | null = null;
+    
+    // Tenta extrair do formato padrão
+    if (evolutionData.qrcode) {
+      if (typeof evolutionData.qrcode === 'string') {
+        qrCodeBase64 = evolutionData.qrcode;
+      } else if (evolutionData.qrcode.base64) {
+        qrCodeBase64 = evolutionData.qrcode.base64;
+      }
     }
 
     // Remove possíveis prefixos data:image

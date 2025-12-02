@@ -291,6 +291,7 @@ export const useDashboardData = () => {
     chartData,
     logs,
     toasts,
+    setToasts,
     showToast,
     addLog,
     setInstances,

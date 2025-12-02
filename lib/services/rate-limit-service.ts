@@ -126,14 +126,18 @@ export class RateLimitService {
   async recordLeadUsage(campaignId: string, count: number, success: boolean): Promise<void> {
     const updateField = success ? 'processed_contacts' : 'failed_contacts';
     
-    // Busca valores atuais
+    // Busca valores atuais (busca ambos os campos para evitar problemas de tipo)
     const { data: campaign } = await supabaseServiceRole
       .from('campaigns')
-      .select(`${updateField}`)
+      .select('processed_contacts, failed_contacts')
       .eq('id', campaignId)
       .single();
 
-    const currentValue = (campaign?.[updateField] as number) || 0;
+    const currentValue = campaign 
+      ? (updateField === 'processed_contacts' 
+          ? ((campaign as any).processed_contacts as number) || 0
+          : ((campaign as any).failed_contacts as number) || 0)
+      : 0;
     const newValue = currentValue + count;
 
     await supabaseServiceRole
