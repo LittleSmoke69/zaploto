@@ -3,6 +3,7 @@ import { requireAuth } from '@/lib/middleware/auth';
 import { successResponse, errorResponse, serverErrorResponse } from '@/lib/utils/response';
 import { supabaseServiceRole } from '@/lib/services/supabase-service';
 import { evolutionService } from '@/lib/services/evolution-service';
+import { rateLimitService } from '@/lib/services/rate-limit-service';
 
 /**
  * GET /api/instances - Lista todas as instâncias do usuário
@@ -21,7 +22,23 @@ export async function GET(req: NextRequest) {
       return errorResponse(`Erro ao buscar instâncias: ${error.message}`);
     }
 
-    return successResponse(data || [], 'Instâncias carregadas com sucesso');
+    // Busca limite de instâncias do usuário
+    const instanceLimit = await rateLimitService.checkInstanceLimit(userId);
+
+    // Retorna instâncias no formato antigo para compatibilidade
+    // Adiciona informação de limite como propriedade não enumerável para não quebrar código existente
+    const instances = data || [];
+    Object.defineProperty(instances, '__limit', {
+      value: {
+        current: instanceLimit.current,
+        max: instanceLimit.max,
+        allowed: instanceLimit.allowed,
+      },
+      enumerable: false,
+      writable: false,
+    });
+
+    return successResponse(instances, 'Instâncias carregadas com sucesso');
   } catch (err: any) {
     return errorResponse(err.message || 'Erro ao buscar instâncias', 401);
   }
@@ -42,6 +59,15 @@ export async function POST(req: NextRequest) {
 
     if (phoneNumber.length < 10) {
       return errorResponse('Número de telefone inválido (mínimo 10 dígitos)', 400);
+    }
+
+    // Verifica limite de instâncias antes de criar
+    const instanceLimit = await rateLimitService.checkInstanceLimit(userId);
+    if (!instanceLimit.allowed) {
+      return errorResponse(
+        `Limite de instâncias atingido. Você possui ${instanceLimit.current} de ${instanceLimit.max} instâncias permitidas.`,
+        429
+      );
     }
 
     const fullNumber = `55${phoneNumber}`;

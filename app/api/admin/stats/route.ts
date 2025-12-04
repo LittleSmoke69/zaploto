@@ -69,6 +69,49 @@ export async function GET(req: NextRequest) {
       ? Math.round((totalProcessed / totalAdded) * 100) 
       : 0;
 
+    // Busca dados históricos para o gráfico (últimos 7 dias)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    const { data: historicalCampaigns } = await supabaseServiceRole
+      .from('campaigns')
+      .select('created_at, processed_contacts, total_contacts')
+      .gte('created_at', sevenDaysAgo.toISOString())
+      .order('created_at', { ascending: true });
+
+    // Agrupa por dia
+    const chartData: { date: string; mensagens: number; adicoes: number }[] = [];
+    const dateMap = new Map<string, { mensagens: number; adicoes: number }>();
+
+    // Inicializa os últimos 7 dias
+    for (let i = 6; i >= 0; i--) {
+      const date = new Date();
+      date.setDate(date.getDate() - i);
+      const dateStr = date.toISOString().split('T')[0];
+      dateMap.set(dateStr, { mensagens: 0, adicoes: 0 });
+    }
+
+    // Processa campanhas
+    historicalCampaigns?.forEach((campaign) => {
+      const dateStr = campaign.created_at.split('T')[0];
+      const existing = dateMap.get(dateStr);
+      if (existing) {
+        existing.mensagens += campaign.processed_contacts || 0;
+        existing.adicoes += campaign.total_contacts || 0;
+      }
+    });
+
+    // Converte para array
+    dateMap.forEach((value, key) => {
+      const date = new Date(key);
+      const monthNames = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+      chartData.push({
+        date: `${date.getDate()}/${monthNames[date.getMonth()]}`,
+        mensagens: value.mensagens,
+        adicoes: value.adicoes,
+      });
+    });
+
     return successResponse({
       overview: {
         totalUsers: totalUsers || 0,
@@ -99,6 +142,7 @@ export async function GET(req: NextRequest) {
         added: addedContacts,
         sent: sentMessages,
       },
+      chartData,
     });
   } catch (err: any) {
     return serverErrorResponse(err);

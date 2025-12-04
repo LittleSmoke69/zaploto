@@ -51,6 +51,7 @@ const InstancesPage = () => {
   const [isQRModalOpen, setIsQRModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [groupsLoading, setGroupsLoading] = useState(false);
+  const [currentConnectingInstance, setCurrentConnectingInstance] = useState<string | null>(null);
   
   // Busca e paginação
   const [savedGroupsSearch, setSavedGroupsSearch] = useState('');
@@ -72,6 +73,38 @@ const InstancesPage = () => {
     if (!userId) { showToast('Sessão inválida', 'error'); return; }
     if (!instanceName) { showToast('Digite um nome para a instância', 'error'); return; }
     if (!phoneNumber || phoneNumber.length < 10) { showToast('Digite um número válido com DDD', 'error'); return; }
+
+    // Verifica limite de instâncias antes de criar
+    try {
+      const limitResponse = await fetch('/api/instances', {
+        method: 'GET',
+        headers: { 'X-User-Id': userId },
+      });
+      const limitData = await limitResponse.json();
+      
+      // Verifica se há informação de limite na resposta
+      // A propriedade __limit é não enumerável, então acessamos diretamente
+      const limitInfo = (limitData.data as any)?.__limit || limitData.data?.limit;
+      if (limitInfo) {
+        const { current, max, allowed } = limitInfo;
+        if (!allowed) {
+          showToast(`Limite de instâncias atingido! Você possui ${current} de ${max} instâncias permitidas.`, 'error');
+          addLog(`Limite de instâncias atingido: ${current}/${max}`, 'error');
+          return;
+        }
+      } else {
+        // Fallback: verifica usando o número de instâncias carregadas
+        // Se não conseguir obter o limite, usa o padrão de 20
+        if (instances.length >= 20) {
+          showToast(`Limite de instâncias atingido! Você possui ${instances.length} instâncias.`, 'error');
+          addLog(`Limite de instâncias atingido: ${instances.length}`, 'error');
+          return;
+        }
+      }
+    } catch (limitError) {
+      // Se falhar ao verificar limite, continua (a API também verifica)
+      console.warn('Erro ao verificar limite de instâncias:', limitError);
+    }
 
     setLoading(true);
     try {
@@ -113,10 +146,22 @@ const InstancesPage = () => {
           if (/^[A-Za-z0-9+/=]+$/.test(cleanQrCode) && cleanQrCode.length >= 100) {
             showToast('Instância criada com sucesso!', 'success');
             addLog(`Instância ${instanceName} criada com QR Code válido`, 'success');
+            
+            // Define o QR code e abre o modal ANTES de recarregar os dados
             setQrCode(cleanQrCode);
             setQrTimer(QR_WINDOW_SECONDS);
             setQrExpired(false);
+            setCurrentConnectingInstance(instanceName); // Marca qual instância está conectando
             setIsQRModalOpen(true); // Abre o modal
+            
+            // Limpa os campos
+            setInstanceName('');
+            setPhoneNumber('');
+            
+            // Recarrega os dados DEPOIS de abrir o modal (com pequeno delay para garantir que o modal abra)
+            setTimeout(async () => {
+              await loadInitialData();
+            }, 100);
           } else {
             console.warn('QR Code recebido não parece ser válido:', {
               length: cleanQrCode.length,
@@ -128,20 +173,33 @@ const InstancesPage = () => {
             setQrCode(cleanQrCode);
             setQrTimer(QR_WINDOW_SECONDS);
             setQrExpired(false);
+            setCurrentConnectingInstance(instanceName); // Marca qual instância está conectando
             setIsQRModalOpen(true); // Abre o modal mesmo com QR inválido
+            
+            setInstanceName('');
+            setPhoneNumber('');
+            setTimeout(async () => {
+              await loadInitialData();
+            }, 100);
           }
         } else {
           showToast('Instância criada, mas QR Code não foi retornado. Verifique o status da instância.', 'info');
           addLog(`Instância ${instanceName} criada sem QR Code. Verifique o status.`, 'info');
+          setInstanceName('');
+          setPhoneNumber('');
+          await loadInitialData();
         }
-        
-        setInstanceName('');
-        setPhoneNumber('');
-        await loadInitialData();
       } else {
         const errorMsg = data.error || data.message || 'Erro ao criar instância';
-        showToast(errorMsg, 'error');
-        addLog(`Erro ao criar instância: ${errorMsg}`, 'error');
+        
+        // Verifica se é erro de limite atingido
+        if (response.status === 429 || errorMsg.includes('Limite de instâncias')) {
+          showToast(errorMsg, 'error');
+          addLog(`Limite de instâncias atingido: ${errorMsg}`, 'error');
+        } else {
+          showToast(errorMsg, 'error');
+          addLog(`Erro ao criar instância: ${errorMsg}`, 'error');
+        }
         console.error('Erro na criação:', { response, data });
       }
     } catch (error) {
@@ -366,18 +424,23 @@ const InstancesPage = () => {
     return () => { if (interval) clearInterval(interval); };
   }, [qrTimer]);
 
-  // Verifica se alguma instância conectou e fecha o modal automaticamente
+  // Verifica se a instância que está conectando realmente conectou
+  // Só fecha o modal se a instância específica que está mostrando o QR code conectou
   useEffect(() => {
-    if (isQRModalOpen && instances.length > 0) {
-      const hasConnected = instances.some(inst => inst.status === 'connected');
-      if (hasConnected) {
+    if (isQRModalOpen && currentConnectingInstance && instances.length > 0) {
+      // Busca a instância específica que está conectando
+      const targetInstance = instances.find(inst => inst.instance_name === currentConnectingInstance);
+      
+      // Se a instância específica conectou, fecha o modal
+      if (targetInstance && targetInstance.status === 'connected') {
         setIsQRModalOpen(false);
         setQrCode('');
         setQrTimer(0);
-        showToast('Instância conectada! Modal fechado automaticamente.', 'success');
+        setCurrentConnectingInstance(null);
+        showToast('Instância conectada com sucesso!', 'success');
       }
     }
-  }, [instances, isQRModalOpen, showToast]);
+  }, [instances, isQRModalOpen, currentConnectingInstance, showToast]);
 
   const handleSignOut = async () => {
     if (typeof window !== 'undefined') {
@@ -810,6 +873,7 @@ const InstancesPage = () => {
           setIsQRModalOpen(false);
           setQrCode('');
           setQrTimer(0);
+          setCurrentConnectingInstance(null);
         }}
         qrCode={qrCode}
         qrTimer={qrTimer}
