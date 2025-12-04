@@ -13,6 +13,8 @@ import {
   AlertCircle,
   Info,
   X,
+  Clock,
+  XCircle,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
@@ -254,7 +256,7 @@ const AddToGroupPage = () => {
               value={selectedInstance}
               onChange={e => setSelectedInstance(e.target.value)}
               disabled={multiInstancesMode}
-              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 disabled:opacity-50"
+              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 disabled:opacity-50 text-black"
             >
               <option value="">Selecione uma Instância</option>
               {instances.map(inst => (
@@ -303,7 +305,7 @@ const AddToGroupPage = () => {
                 <select
                   value={distributionMode}
                   onChange={e => setDistributionMode(e.target.value as DistributionMode)}
-                  className="w-full px-4 py-2 border border-gray-200 rounded-lg"
+                  className="w-full px-4 py-2 border border-gray-200 rounded-lg text-black"
                 >
                   <option value="sequential">Sequencial</option>
                   <option value="random">Aleatório</option>
@@ -324,7 +326,7 @@ const AddToGroupPage = () => {
                 setSelectedGroupJid(e.target.value);
                 setSelectedGroupSubject(group?.group_subject || '');
               }}
-              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-black"
             >
               <option value="">Selecione um Grupo</option>
               {dbGroups.map(group => (
@@ -346,7 +348,7 @@ const AddToGroupPage = () => {
               onChange={e => setAddLimit(Number(e.target.value))}
               placeholder="Digite uma Quantidade*"
               min="1"
-              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-black placeholder:text-black"
             />
           </div>
 
@@ -363,13 +365,13 @@ const AddToGroupPage = () => {
                 placeholder="Digite uma Quantidade*"
                 min="0"
                 disabled={addRandom}
-                className="flex-1 px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 disabled:opacity-50"
+                className="flex-1 px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 disabled:opacity-50 text-black placeholder:text-black"
               />
               <select
                 value={addDelayUnit}
                 onChange={e => setAddDelayUnit(e.target.value as DelayUnit)}
                 disabled={addRandom}
-                className="px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 disabled:opacity-50"
+                className="px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 disabled:opacity-50 text-black"
               >
                 <option value="seconds">Segundos</option>
                 <option value="minutes">Minutos</option>
@@ -393,7 +395,7 @@ const AddToGroupPage = () => {
                   type="number"
                   value={randomMinSeconds}
                   onChange={e => setRandomMinSeconds(Number(e.target.value))}
-                  className="w-24 px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                  className="w-24 px-3 py-2 border border-gray-200 rounded-lg text-sm text-black"
                   min="0"
                 />
                 <span className="text-gray-600">a</span>
@@ -401,7 +403,7 @@ const AddToGroupPage = () => {
                   type="number"
                   value={randomMaxSeconds}
                   onChange={e => setRandomMaxSeconds(Number(e.target.value))}
-                  className="w-24 px-3 py-2 border border-gray-200 rounded-lg text-sm"
+                  className="w-24 px-3 py-2 border border-gray-200 rounded-lg text-sm text-black"
                   min="0"
                 />
                 <span className="text-xs text-gray-500">segundos</span>
@@ -426,7 +428,7 @@ const AddToGroupPage = () => {
               placeholder="Digite uma Quantidade*"
               min="1"
               max="10"
-              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+              className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-black placeholder:text-black"
             />
             <p className="text-xs text-gray-500 mt-1">
               *Use com cautela para evitar rate-limit.
@@ -504,9 +506,16 @@ const AddToGroupPage = () => {
           }}
           onDelete={async (campaignId: string) => {
             if (!confirm('Tem certeza que deseja excluir esta campanha?')) return;
+            if (!userId) {
+              showToast('Sessão inválida', 'error');
+              return;
+            }
             try {
               const response = await fetch(`/api/campaigns/${campaignId}`, {
                 method: 'DELETE',
+                headers: {
+                  'X-User-Id': userId,
+                },
               });
               const data = await response.json();
               if (data.success) {
@@ -520,6 +529,161 @@ const AddToGroupPage = () => {
             }
           }}
         />
+
+        {/* Histórico de Campanhas */}
+        <div className="bg-white rounded-xl shadow-md p-6">
+          <h2 className="text-lg font-semibold text-gray-800 mb-4">Histórico de Campanhas</h2>
+          {(() => {
+            const historyCampaigns = campaigns.filter(
+              c => c.status === 'completed' || c.status === 'failed'
+            );
+
+            if (historyCampaigns.length === 0) {
+              return (
+                <p className="text-sm text-gray-500 text-center py-4">
+                  Nenhuma campanha finalizada no histórico
+                </p>
+              );
+            }
+
+            return (
+              <div className="space-y-4">
+                {historyCampaigns.map(campaign => {
+                  const total = campaign.total_contacts || 1;
+                  const processed = campaign.processed_contacts || 0;
+                  const failed = campaign.failed_contacts || 0;
+                  const completed = processed + failed;
+                  const progressPercentage = Math.round((completed / total) * 100);
+                  const successPercentage = completed > 0 ? Math.round((processed / completed) * 100) : 0;
+                  const failedPercentage = completed > 0 ? Math.round((failed / completed) * 100) : 0;
+                  const isCompleted = campaign.status === 'completed';
+                  const isFailed = campaign.status === 'failed';
+
+                  return (
+                    <div
+                      key={campaign.id}
+                      className="p-4 border-2 border-gray-200 rounded-lg hover:border-emerald-300 transition"
+                    >
+                      <div className="flex justify-between items-start mb-3">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-2">
+                            <h3 className="font-semibold text-gray-800">
+                              {campaign.group_subject || campaign.group_id}
+                            </h3>
+                            <span
+                              className={`px-2 py-1 rounded text-xs font-medium ${
+                                isCompleted
+                                  ? 'bg-emerald-100 text-emerald-700'
+                                  : isFailed
+                                  ? 'bg-red-100 text-red-700'
+                                  : 'bg-gray-100 text-gray-700'
+                              }`}
+                            >
+                              {isCompleted ? 'Concluída' : isFailed ? 'Falhou' : campaign.status}
+                            </span>
+                          </div>
+                          <p className="text-xs text-gray-500 font-mono mb-2">{campaign.id}</p>
+                        </div>
+                        <button
+                          onClick={async () => {
+                            if (!confirm('Tem certeza que deseja excluir esta campanha?')) return;
+                            if (!userId) {
+                              showToast('Sessão inválida', 'error');
+                              return;
+                            }
+                            try {
+                              const response = await fetch(`/api/campaigns/${campaign.id}`, {
+                                method: 'DELETE',
+                                headers: {
+                                  'X-User-Id': userId,
+                                },
+                              });
+                              const data = await response.json();
+                              if (data.success) {
+                                showToast('Campanha excluída com sucesso', 'success');
+                                loadInitialData();
+                              } else {
+                                showToast(data.message || 'Erro ao excluir campanha', 'error');
+                              }
+                            } catch (error) {
+                              showToast('Erro ao excluir campanha', 'error');
+                            }
+                          }}
+                          className="p-2 bg-red-600 hover:bg-red-700 text-white rounded transition"
+                          title="Excluir campanha"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      {/* Estatísticas */}
+                      <div className="grid grid-cols-3 gap-4 mb-3">
+                        <div className="text-center">
+                          <p className="text-xs text-gray-500 mb-1">Total</p>
+                          <p className="text-lg font-bold text-gray-800">{total}</p>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-xs text-gray-500 mb-1">Adicionados</p>
+                          <p className="text-lg font-bold text-emerald-600">{processed}</p>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-xs text-gray-500 mb-1">Falhas</p>
+                          <p className="text-lg font-bold text-red-600">{failed}</p>
+                        </div>
+                      </div>
+
+                      {/* Percentuais */}
+                      <div className="mb-3">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs text-gray-600">Progresso</span>
+                          <span className="text-xs font-medium text-gray-800">{progressPercentage}%</span>
+                        </div>
+                        <div className="w-full bg-gray-200 rounded-full h-2.5">
+                          <div
+                            className={`h-2.5 rounded-full transition-all ${
+                              isCompleted ? 'bg-emerald-600' : 'bg-gray-400'
+                            }`}
+                            style={{ width: `${progressPercentage}%` }}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Taxa de sucesso e falha */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="p-2 bg-emerald-50 rounded">
+                          <div className="flex items-center gap-2 mb-1">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                            <span className="text-xs text-gray-600">Taxa de Sucesso</span>
+                          </div>
+                          <p className="text-sm font-bold text-emerald-600">{successPercentage}%</p>
+                        </div>
+                        <div className="p-2 bg-red-50 rounded">
+                          <div className="flex items-center gap-2 mb-1">
+                            <XCircle className="w-4 h-4 text-red-600" />
+                            <span className="text-xs text-gray-600">Taxa de Falha</span>
+                          </div>
+                          <p className="text-sm font-bold text-red-600">{failedPercentage}%</p>
+                        </div>
+                      </div>
+
+                      {/* Tempo */}
+                      <div className="mt-3 pt-3 border-t border-gray-200">
+                        <div className="flex items-center gap-2 text-xs text-gray-500">
+                          <Clock className="w-3 h-3" />
+                          <span>
+                            {isCompleted && campaign.completed_at
+                              ? `Concluída em: ${new Date(campaign.completed_at).toLocaleString('pt-BR')}`
+                              : `Criada em: ${new Date(campaign.created_at).toLocaleString('pt-BR')}`}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
       </div>
     </Layout>
   );

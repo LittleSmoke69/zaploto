@@ -14,14 +14,14 @@ export async function GET(
     const { userId: adminUserId } = await requireAuth(req);
     const { userId: targetUserId } = await params;
     
-    // Verifica se é admin
-    const { data: userSettings } = await supabaseServiceRole
-      .from('user_settings')
-      .select('is_admin')
-      .eq('user_id', adminUserId)
+    // Verifica se é admin através do campo status na tabela profiles
+    const { data: profile } = await supabaseServiceRole
+      .from('profiles')
+      .select('status')
+      .eq('id', adminUserId)
       .single();
 
-    if (!userSettings?.is_admin) {
+    if (profile?.status !== 'admin') {
       return errorResponse('Acesso negado. Apenas administradores podem acessar.', 403);
     }
 

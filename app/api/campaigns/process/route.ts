@@ -183,18 +183,60 @@ async function processCampaignAsync(
     hasHash: !!i.hash,
   })));
 
-  // Filtra apenas instâncias conectadas e com hash
-  const availableInstances = instanceData.filter(
-    (inst) => inst.status === 'connected' && inst.hash
+  // Verifica status em tempo real para cada instância antes de filtrar
+  console.log(`🔄 Verificando status em tempo real das instâncias...`);
+  const instancesWithRealTimeStatus = await Promise.all(
+    instanceData.map(async (inst) => {
+      if (!inst.hash) {
+        return { ...inst, realTimeStatus: inst.status, reason: 'Sem hash/API key' };
+      }
+
+      try {
+        const evolutionData = await evolutionService.getConnectionState(inst.instance_name, inst.hash);
+        const realTimeStatus = evolutionService.extractState(evolutionData);
+        
+        // Atualiza o status no banco se mudou
+        if (realTimeStatus !== inst.status) {
+          console.log(`   📝 Atualizando status de ${inst.instance_name}: ${inst.status} → ${realTimeStatus}`);
+          await supabaseServiceRole
+            .from('whatsapp_instances')
+            .update({
+              status: realTimeStatus,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('user_id', userId)
+            .eq('instance_name', inst.instance_name);
+        }
+
+        return {
+          ...inst,
+          realTimeStatus,
+          reason: realTimeStatus !== 'connected' ? `Status: ${realTimeStatus}` : null,
+        };
+      } catch (error: any) {
+        console.error(`   ⚠️ Erro ao verificar status de ${inst.instance_name}:`, error.message);
+        return {
+          ...inst,
+          realTimeStatus: inst.status,
+          reason: `Erro ao verificar: ${error.message}`,
+        };
+      }
+    })
+  );
+
+  // Filtra apenas instâncias conectadas e com hash (usando status em tempo real)
+  const availableInstances = instancesWithRealTimeStatus.filter(
+    (inst) => inst.realTimeStatus === 'connected' && inst.hash
   );
 
   if (availableInstances.length === 0) {
     console.error(`❌ Nenhuma instância disponível (conectada e com hash) para a campanha ${campaignId}`);
-    console.error(`   Instâncias encontradas mas não disponíveis:`, instanceData.map(i => ({
+    console.error(`   Instâncias encontradas mas não disponíveis:`, instancesWithRealTimeStatus.map(i => ({
       name: i.instance_name,
-      status: i.status,
+      statusBanco: i.status,
+      statusTempoReal: i.realTimeStatus,
       hasHash: !!i.hash,
-      reason: !i.hash ? 'Sem hash/API key' : i.status !== 'connected' ? `Status: ${i.status}` : 'Desconhecido',
+      reason: !i.hash ? 'Sem hash/API key' : i.reason || 'Desconhecido',
     })));
     await supabaseServiceRole
       .from('campaigns')
@@ -215,6 +257,20 @@ async function processCampaignAsync(
   availableInstances.forEach((inst) => {
     instanceStatus.set(inst.instance_name, { errors: 0, banned: false });
   });
+
+  // Função para normalizar número de telefone (adiciona 55 se não tiver)
+  const normalizePhoneNumber = (phone: string): string => {
+    // Remove caracteres não numéricos
+    const cleaned = phone.replace(/\D/g, '');
+    
+    // Se já começa com 55, retorna como está
+    if (cleaned.startsWith('55')) {
+      return cleaned;
+    }
+    
+    // Se não começa com 55, adiciona
+    return `55${cleaned}`;
+  };
 
   // Função para calcular delay
   const getDelay = (): number => {
@@ -360,8 +416,7 @@ async function processCampaignAsync(
       failed += remaining;
       await rateLimitService.recordLeadUsage(campaignId, remaining, false);
       
-      // IMPORTANTE: Atualiza status de todos os leads restantes para 'added'
-      // para evitar que sejam processados novamente
+      // Marca todos os leads restantes como 'erro' pois não foram processados
       const remainingJobs = jobs.slice(i);
       const remainingContactIds = remainingJobs.map(j => j.contactId);
       
@@ -369,14 +424,14 @@ async function processCampaignAsync(
         await supabaseServiceRole
           .from('searches')
           .update({
-            status: 'added', // Marca como 'added' para não processar novamente
+            status: 'erro', // Marca como 'erro' pois não foram processados
             updated_at: new Date().toISOString(),
             // Não marca status_add_gp como true pois falharam
           })
           .in('id', remainingContactIds);
       }
       
-      logDetail('error', `Todas as instâncias foram banidas. ${remaining} jobs restantes marcados como falha e status atualizado para 'added'.`, {
+      logDetail('error', `Todas as instâncias foram banidas. ${remaining} jobs restantes marcados como erro.`, {
         jobNumber,
         contactId: job.contactId,
         phone: job.phone,
@@ -386,7 +441,7 @@ async function processCampaignAsync(
         bannedInstances: Array.from(instanceStatus.entries())
           .filter(([_, status]) => status.banned)
           .map(([name]) => name),
-        action: 'Status atualizado para "added" em todos os leads restantes',
+        action: 'Status atualizado para "erro" em todos os leads restantes',
       });
       break;
     }
@@ -403,12 +458,25 @@ async function processCampaignAsync(
     try {
       const startTime = Date.now();
       
+      // Normaliza o número de telefone (adiciona 55 se não tiver)
+      const normalizedPhone = normalizePhoneNumber(job.phone);
+      
+      // Log se o número foi alterado
+      if (normalizedPhone !== job.phone) {
+        logDetail('info', `Número normalizado: ${job.phone} → ${normalizedPhone}`, {
+          jobNumber,
+          contactId: job.contactId,
+          originalPhone: job.phone,
+          normalizedPhone,
+        });
+      }
+      
       // Adiciona participante ao grupo
       const result = await evolutionService.addParticipantsToGroup(
         instance.name,
         instance.hash,
         groupId,
-        [job.phone]
+        [normalizedPhone]
       );
 
       const duration = Date.now() - startTime;
@@ -441,12 +509,11 @@ async function processCampaignAsync(
         failed++;
         await rateLimitService.recordLeadUsage(campaignId, 1, false);
 
-        // IMPORTANTE: Atualiza status para 'added' mesmo quando falha
-        // Isso evita que o mesmo lead seja processado novamente
+        // Marca como 'erro' quando falha - não marca como 'added' pois não foi adicionado ao grupo
         const { error: updateError } = await supabaseServiceRole
           .from('searches')
           .update({
-            status: 'added', // Marca como 'added' para não processar novamente
+            status: 'erro', // Marca como 'erro' pois falhou ao adicionar
             updated_at: new Date().toISOString(),
             // Não marca status_add_gp como true pois falhou
           })
@@ -477,7 +544,7 @@ async function processCampaignAsync(
           }
         }
 
-        logDetail('error', `Falha ao adicionar lead ao grupo - Status atualizado para 'added' para evitar reprocessamento`, {
+        logDetail('error', `Falha ao adicionar lead ao grupo - Status atualizado para 'erro'`, {
           jobNumber,
           contactId: job.contactId,
           phone: job.phone,
@@ -495,7 +562,7 @@ async function processCampaignAsync(
             : result.errorType === 'rate_limit'
             ? 'Instância suspensa temporariamente'
             : 'Erro registrado',
-          statusUpdated: 'added', // Indica que status foi atualizado mesmo com falha
+          statusUpdated: 'erro', // Status marcado como erro pois não foi adicionado
           updateError: updateError?.message || null,
         });
       }
@@ -503,18 +570,17 @@ async function processCampaignAsync(
       failed++;
       await rateLimitService.recordLeadUsage(campaignId, 1, false);
       
-      // IMPORTANTE: Atualiza status para 'added' mesmo em caso de exceção
-      // Isso evita que o mesmo lead seja processado novamente
+      // Marca como 'erro' em caso de exceção - não foi adicionado ao grupo
       const { error: updateError } = await supabaseServiceRole
         .from('searches')
         .update({
-          status: 'added', // Marca como 'added' para não processar novamente
+          status: 'erro', // Marca como 'erro' pois falhou
           updated_at: new Date().toISOString(),
           // Não marca status_add_gp como true pois falhou
         })
         .eq('id', job.contactId);
       
-      logDetail('error', `Erro inesperado ao processar job - Status atualizado para 'added' para evitar reprocessamento`, {
+      logDetail('error', `Erro inesperado ao processar job - Status atualizado para 'erro'`, {
         jobNumber,
         contactId: job.contactId,
         phone: job.phone,
@@ -524,7 +590,7 @@ async function processCampaignAsync(
         errorMessage: error?.message || String(error),
         errorStack: error?.stack || null,
         errorName: error?.name || 'UnknownError',
-        statusUpdated: 'added', // Indica que status foi atualizado mesmo com exceção
+        statusUpdated: 'erro', // Status marcado como erro pois não foi adicionado
         updateError: updateError?.message || null,
       });
     }

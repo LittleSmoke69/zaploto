@@ -10,14 +10,14 @@ export async function GET(req: NextRequest) {
   try {
     const { userId } = await requireAuth(req);
     
-    // Verifica se é admin
-    const { data: userSettings } = await supabaseServiceRole
-      .from('user_settings')
-      .select('is_admin')
-      .eq('user_id', userId)
+    // Verifica se é admin através do campo status na tabela profiles
+    const { data: profile } = await supabaseServiceRole
+      .from('profiles')
+      .select('status')
+      .eq('id', userId)
       .single();
 
-    if (!userSettings?.is_admin) {
+    if (profile?.status !== 'admin') {
       return errorResponse('Acesso negado. Apenas administradores podem acessar.', 403);
     }
 
@@ -99,14 +99,14 @@ export async function PATCH(req: NextRequest) {
   try {
     const { userId } = await requireAuth(req);
     
-    // Verifica se é admin
-    const { data: userSettings } = await supabaseServiceRole
-      .from('user_settings')
-      .select('is_admin')
-      .eq('user_id', userId)
+    // Verifica se é admin através do campo status na tabela profiles
+    const { data: profile } = await supabaseServiceRole
+      .from('profiles')
+      .select('status')
+      .eq('id', userId)
       .single();
 
-    if (!userSettings?.is_admin) {
+    if (profile?.status !== 'admin') {
       return errorResponse('Acesso negado. Apenas administradores podem acessar.', 403);
     }
 

@@ -265,40 +265,29 @@ const InstancesPage = () => {
     }
 
     try {
-      const instance = instances.find(i => i.instance_name === selectedInstance);
-      if (!instance || !instance.hash) {
-        showToast('Instância não encontrada ou sem API key', 'error');
-        return;
-      }
-
       showToast('Extraindo contatos...', 'info');
       addLog(`Extraindo contatos do grupo ${selectedGroup}...`, 'info');
 
-      const EVOLUTION_BASE = process.env.NEXT_PUBLIC_EVOLUTION_BASE!;
-      const url = `${EVOLUTION_BASE}/group/participants/${selectedInstance}/${selectedGroup}`;
-      
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: { apikey: instance.hash },
+      const response = await fetch('/api/groups/extract-contacts', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-User-Id': userId 
+        },
+        body: JSON.stringify({ 
+          instanceName: selectedInstance, 
+          groupId: selectedGroup 
+        }),
       });
 
-      const data = await response.json().catch(() => ({} as any));
+      const data = await response.json();
 
-      if (response.ok && data) {
-        let participants: any[] = [];
-        
-        if (Array.isArray(data)) {
-          participants = data;
-        } else if (Array.isArray(data.participants)) {
-          participants = data.participants;
-        } else if (data.id) {
-          participants = [data];
-        }
-
-        const formatted = participants.map((p: any) => ({
-          id: p.id || p.jid || '',
-          name: p.name || p.pushName || '',
-          phone: (p.id || p.jid || '').replace('@s.whatsapp.net', '').replace('@c.us', ''),
+      if (response.ok && data.data) {
+        // Formata os contatos para o formato esperado pela página de instâncias
+        const formatted = data.data.map((p: any) => ({
+          id: p.id || '',
+          name: p.name || '',
+          phone: p.telefone || '',
           group: selectedGroup,
         }));
 
@@ -306,8 +295,8 @@ const InstancesPage = () => {
         showToast(`${formatted.length} contato(s) extraído(s)`, 'success');
         addLog(`${formatted.length} contatos extraídos do grupo`, 'success');
       } else {
-        showToast('Erro ao extrair contatos', 'error');
-        addLog(`Erro: ${data.message || 'Erro desconhecido'}`, 'error');
+        showToast(data.error || 'Erro ao extrair contatos', 'error');
+        addLog(`Erro: ${data.error || 'Erro desconhecido'}`, 'error');
       }
     } catch (error) {
       showToast('Erro ao extrair contatos', 'error');
@@ -484,7 +473,7 @@ const InstancesPage = () => {
                     value={instanceName}
                     onChange={e => setInstanceName(e.target.value)}
                     placeholder="Ex: Instância 01"
-                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-black placeholder:text-black"
                   />
                 </div>
                 <div>
@@ -497,7 +486,7 @@ const InstancesPage = () => {
                     onChange={handlePhoneChange}
                     placeholder="81900000000"
                     maxLength={11}
-                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-black placeholder:text-black"
                   />
                   <p className="text-xs text-gray-500 mt-1">Formato: DDD + número (ex: 81900000000)</p>
                 </div>
@@ -522,7 +511,7 @@ const InstancesPage = () => {
                   <select
                     value={selectedInstance}
                     onChange={e => setSelectedInstance(e.target.value)}
-                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-black"
                   >
                     <option value="">Selecione uma Instância</option>
                     {instances.map(inst => (
@@ -550,7 +539,7 @@ const InstancesPage = () => {
                       value={savedGroupsSearch}
                       onChange={e => setSavedGroupsSearch(e.target.value)}
                       placeholder="Pesquisar..."
-                      className="pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500"
+                      className="pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 text-black placeholder:text-black"
                     />
                   </div>
                 </div>
@@ -614,7 +603,7 @@ const InstancesPage = () => {
                     value={availGroupsSearch}
                     onChange={e => setAvailGroupsSearch(e.target.value)}
                     placeholder="Pesquisar nos grupos da API..."
-                    className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500"
+                    className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 text-black placeholder:text-black"
                   />
                 </div>
                 <button
@@ -689,7 +678,7 @@ const InstancesPage = () => {
                     value={selectedGroup}
                     onChange={e => setSelectedGroup(e.target.value)}
                     disabled={!selectedInstance || dbGroups.length === 0}
-                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 disabled:opacity-50"
+                    className="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 disabled:opacity-50 text-black"
                   >
                     <option value="">Selecione um Grupo</option>
                     {dbGroups.map(group => (
@@ -716,7 +705,7 @@ const InstancesPage = () => {
             <div className="bg-white rounded-xl shadow-md p-6">
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-lg font-semibold text-gray-800">Contatos Extraídos</h2>
-                <select className="text-sm border border-gray-300 rounded-lg px-3 py-1.5">
+                <select className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 text-black">
                   <option>Últimos 7 dias</option>
                   <option>Últimos 30 dias</option>
                 </select>

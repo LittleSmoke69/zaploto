@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRequireAuth } from '@/utils/useRequireAuth';
+import { useRouter } from 'next/navigation';
+import Layout from '@/components/Layout';
 import {
   LayoutDashboard,
   Users,
@@ -17,6 +19,7 @@ import {
   RefreshCw,
   Calendar,
   ChevronDown,
+  LogOut,
 } from 'lucide-react';
 
 interface AdminStats {
@@ -88,6 +91,7 @@ interface Campaign {
 
 const AdminDashboard = () => {
   const { checking } = useRequireAuth();
+  const router = useRouter();
   const [userId, setUserId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -108,8 +112,11 @@ const AdminDashboard = () => {
   useEffect(() => {
     if (userId) {
       checkAdminAndLoad();
+    } else if (!checking) {
+      // Se não tem userId e não está verificando, redireciona para login
+      router.push('/admin/login');
     }
-  }, [userId]);
+  }, [userId, checking, router]);
 
   const checkAdminAndLoad = async () => {
     if (!userId) return;
@@ -136,15 +143,19 @@ const AdminDashboard = () => {
       if (!result.success || !result.data?.isAdmin) {
         setIsAdmin(false);
         setLoading(false);
+        // Redireciona para login de admin se não for admin
+        setTimeout(() => router.push('/admin/login'), 1000);
         return;
       }
 
       setIsAdmin(true);
       await loadData();
+      setLoading(false);
     } catch (error) {
       console.error('Erro ao verificar admin:', error);
       setIsAdmin(false);
       setLoading(false);
+      setTimeout(() => router.push('/admin/login'), 1000);
     }
   };
 
@@ -184,35 +195,65 @@ const AdminDashboard = () => {
     );
   }
 
-  if (!isAdmin) {
+  const handleSignOut = async () => {
+    if (typeof window !== 'undefined') {
+      sessionStorage.removeItem('user_id');
+      sessionStorage.removeItem('profile_id');
+      window.localStorage.removeItem('profile_id');
+      document.cookie = 'user_id=; Path=/; Max-Age=0; SameSite=Lax';
+    }
+    router.push('/admin/login');
+  };
+
+  if (!isAdmin && !loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="text-center bg-white p-8 rounded-lg shadow-lg">
           <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
           <h1 className="text-2xl font-bold text-gray-800 mb-2">Acesso Negado</h1>
-          <p className="text-gray-600">Você não tem permissão para acessar esta área.</p>
+          <p className="text-gray-600 mb-4">Você não tem permissão para acessar esta área.</p>
+          <button
+            onClick={() => router.push('/admin/login')}
+            className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition"
+          >
+            Fazer Login Admin
+          </button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex">
-      {/* Sidebar */}
-      <aside className="w-64 bg-white shadow-lg fixed left-0 top-0 h-full z-10">
-        <div className="p-6 border-b border-gray-200">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-gradient-to-br from-yellow-400 to-emerald-600 rounded-lg flex items-center justify-center">
-              <span className="text-white font-bold text-sm">Z</span>
-            </div>
-            <span className="font-bold text-gray-800">ZAPLOTO</span>
+    <Layout onSignOut={handleSignOut}>
+      <div className="space-y-8">
+        {/* Header */}
+        <div className="flex justify-between items-start">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-800 mb-2">Painel Administrativo</h1>
+            <p className="text-gray-600">Gerenciamento completo do sistema</p>
+          </div>
+          <div className="flex items-center gap-4">
+            <button className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg shadow border border-gray-200 hover:bg-gray-50">
+              <Calendar className="w-4 h-4" />
+              <span>Últimos 7 dias</span>
+              <ChevronDown className="w-4 h-4" />
+            </button>
+            <button
+              onClick={handleSignOut}
+              className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition shadow-md hover:shadow-lg"
+              title="Sair do painel admin"
+            >
+              <LogOut className="w-5 h-5" />
+              <span>Sair</span>
+            </button>
           </div>
         </div>
 
-        <nav className="p-4 space-y-2">
+        {/* Navigation Tabs */}
+        <div className="bg-white rounded-xl shadow-md p-2 flex gap-2">
           <button
             onClick={() => setActiveSection('overview')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition ${
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition ${
               activeSection === 'overview'
                 ? 'bg-emerald-600 text-white'
                 : 'text-gray-700 hover:bg-gray-100'
@@ -224,7 +265,7 @@ const AdminDashboard = () => {
 
           <button
             onClick={() => setActiveSection('users')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition ${
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition ${
               activeSection === 'users'
                 ? 'bg-emerald-600 text-white'
                 : 'text-gray-700 hover:bg-gray-100'
@@ -236,7 +277,7 @@ const AdminDashboard = () => {
 
           <button
             onClick={() => setActiveSection('campaigns')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition ${
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition ${
               activeSection === 'campaigns'
                 ? 'bg-emerald-600 text-white'
                 : 'text-gray-700 hover:bg-gray-100'
@@ -248,7 +289,7 @@ const AdminDashboard = () => {
 
           <button
             onClick={() => setActiveSection('settings')}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition ${
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition ${
               activeSection === 'settings'
                 ? 'bg-emerald-600 text-white'
                 : 'text-gray-700 hover:bg-gray-100'
@@ -257,11 +298,10 @@ const AdminDashboard = () => {
             <Settings className="w-5 h-5" />
             <span>Configurações</span>
           </button>
-        </nav>
-      </aside>
+        </div>
 
-      {/* Main Content */}
-      <main className="flex-1 ml-64 p-8">
+        {/* Main Content */}
+        <div>
         {/* Header */}
         <div className="mb-8 flex justify-between items-center">
           <div>
@@ -275,10 +315,10 @@ const AdminDashboard = () => {
           </button>
         </div>
 
-        {activeSection === 'overview' && stats && (
-          <div className="space-y-6">
-            {/* Métricas */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+          {activeSection === 'overview' && stats && (
+            <div className="space-y-6">
+              {/* Métricas */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
               <MetricCard
                 title="Mensagens Enviadas"
                 value={stats.contacts.sent}
@@ -378,19 +418,20 @@ const AdminDashboard = () => {
                 </div>
                 <div className="text-3xl font-bold text-gray-800">{stats.overview.totalGroups}</div>
               </div>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {activeSection === 'users' && (
-          <UsersSection users={users} onUserSelect={setSelectedUser} selectedUser={selectedUser} />
-        )}
+          {activeSection === 'users' && (
+            <UsersSection users={users} onUserSelect={setSelectedUser} selectedUser={selectedUser} />
+          )}
 
-        {activeSection === 'campaigns' && <CampaignsSection userId={userId} />}
+          {activeSection === 'campaigns' && <CampaignsSection userId={userId} />}
 
-        {activeSection === 'settings' && <SettingsSection />}
-      </main>
-    </div>
+          {activeSection === 'settings' && <SettingsSection />}
+        </div>
+      </div>
+    </Layout>
   );
 };
 
@@ -492,7 +533,7 @@ const UsersSection = ({
                       type="number"
                       value={maxLeads}
                       onChange={(e) => setMaxLeads(Number(e.target.value))}
-                      className="w-20 px-2 py-1 border rounded"
+                      className="w-20 px-2 py-1 border rounded text-black"
                     />
                   ) : (
                     <span>{user.settings.max_leads_per_day}</span>
@@ -504,7 +545,7 @@ const UsersSection = ({
                       type="number"
                       value={maxInstances}
                       onChange={(e) => setMaxInstances(Number(e.target.value))}
-                      className="w-20 px-2 py-1 border rounded"
+                      className="w-20 px-2 py-1 border rounded text-black"
                     />
                   ) : (
                     <span>{user.settings.max_instances}</span>

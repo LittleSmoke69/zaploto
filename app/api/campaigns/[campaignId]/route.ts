@@ -129,6 +129,12 @@ export async function DELETE(
     const { userId } = await requireAuth(req);
     const { campaignId } = await params;
 
+    if (!campaignId) {
+      return errorResponse('ID da campanha é obrigatório', 400);
+    }
+
+    console.log(`🗑️ Tentando excluir campanha: ${campaignId} para usuário: ${userId}`);
+
     // Verifica se a campanha existe e pertence ao usuário
     const { data: campaign, error: checkError } = await supabaseServiceRole
       .from('campaigns')
@@ -137,35 +143,60 @@ export async function DELETE(
       .eq('id', campaignId)
       .single();
 
-    if (checkError || !campaign) {
+    if (checkError) {
+      console.error('❌ Erro ao verificar campanha:', checkError);
+      return errorResponse(`Erro ao verificar campanha: ${checkError.message}`, 500);
+    }
+
+    if (!campaign) {
+      console.log(`⚠️ Campanha não encontrada: ${campaignId}`);
       return errorResponse('Campanha não encontrada', 404);
     }
 
+    console.log(`📋 Campanha encontrada: ${campaignId}, Status: ${campaign.status}`);
+
     // Se a campanha estiver em execução ou pausada, marca como failed antes de excluir
     if (campaign.status === 'running' || campaign.status === 'paused') {
-      await supabaseServiceRole
+      console.log(`🔄 Atualizando status da campanha ${campaignId} para 'failed' antes de excluir`);
+      const { error: updateError } = await supabaseServiceRole
         .from('campaigns')
         .update({
           status: 'failed',
           completed_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })
-        .eq('id', campaignId);
+        .eq('id', campaignId)
+        .eq('user_id', userId);
+
+      if (updateError) {
+        console.error('❌ Erro ao atualizar status da campanha:', updateError);
+        return errorResponse(`Erro ao atualizar status da campanha: ${updateError.message}`, 500);
+      }
     }
 
     // Exclui a campanha
-    const { error } = await supabaseServiceRole
+    console.log(`🗑️ Excluindo campanha: ${campaignId}`);
+    const { error, data } = await supabaseServiceRole
       .from('campaigns')
       .delete()
       .eq('user_id', userId)
-      .eq('id', campaignId);
+      .eq('id', campaignId)
+      .select();
 
     if (error) {
-      return errorResponse(`Erro ao excluir campanha: ${error.message}`);
+      console.error('❌ Erro ao excluir campanha:', error);
+      return errorResponse(`Erro ao excluir campanha: ${error.message}`, 500);
     }
 
+    if (!data || data.length === 0) {
+      console.log(`⚠️ Nenhuma campanha foi excluída: ${campaignId}`);
+      return errorResponse('Campanha não encontrada ou já foi excluída', 404);
+    }
+
+    console.log(`✅ Campanha excluída com sucesso: ${campaignId}`);
     return successResponse({ id: campaignId }, 'Campanha excluída com sucesso');
   } catch (err: any) {
+    console.error('❌ Erro inesperado ao excluir campanha:', err);
     return serverErrorResponse(err);
   }
 }

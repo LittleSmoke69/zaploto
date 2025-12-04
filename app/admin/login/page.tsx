@@ -4,9 +4,9 @@ import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import bcrypt from 'bcryptjs';
-import { Mail, Lock, LogIn, AlertCircle } from 'lucide-react';
+import { Mail, Lock, LogIn, AlertCircle, Shield } from 'lucide-react';
 
-const LoginPage = () => {
+const AdminLoginPage = () => {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -38,6 +38,7 @@ const LoginPage = () => {
     }
   };
 
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
@@ -54,7 +55,7 @@ const LoginPage = () => {
 
       const { data: user, error } = await supabase
         .from('profiles')
-        .select('id, email, password_hash')
+        .select('id, email, password_hash, status')
         .eq('email', emailLower)
         .single();
 
@@ -71,6 +72,14 @@ const LoginPage = () => {
         return;
       }
 
+      // Verifica se o usuário é admin através do campo status
+      const isAdmin = user.status === 'admin';
+      if (!isAdmin) {
+        setErrorMsg('Acesso negado. Esta conta não possui permissões de administrador.');
+        setLoading(false);
+        return;
+      }
+
       // Guarda artefatos de sessão (sessionStorage + cookie + fallback localStorage)
       setSessionArtifacts(user.id, user.email);
 
@@ -79,11 +88,13 @@ const LoginPage = () => {
         await supabase
           .from('profiles')
           .update({ last_login_at: new Date().toISOString() })
-          .eq('user_id', user.id);
+          .eq('id', user.id);
       } catch {}
 
-      router.push('/');
+      // Redireciona para o painel admin
+      router.push('/admin');
     } catch (err) {
+      console.error('Erro ao efetuar login:', err);
       setErrorMsg('Erro ao efetuar login.');
     } finally {
       setLoading(false);
@@ -96,14 +107,15 @@ const LoginPage = () => {
         {/* Logo e Título */}
         <div className="text-center mb-8">
           <div className="flex items-center justify-center gap-2 mb-4">
-            <span className="text-3xl font-bold text-gray-800">ZAP</span>
-            <span className="text-3xl font-bold text-emerald-500">LOTO</span>
+            <div className="w-12 h-12 bg-gradient-to-br from-yellow-400 to-emerald-600 rounded-lg flex items-center justify-center">
+              <Shield className="w-7 h-7 text-white" />
+            </div>
           </div>
           <h1 className="text-2xl font-bold text-gray-800 mb-2">
-            Bem-vindo de volta
+            Painel Administrativo
           </h1>
           <p className="text-gray-600 text-sm">
-            Entre com suas credenciais para acessar sua conta
+            Acesso restrito para administradores
           </p>
         </div>
 
@@ -129,7 +141,7 @@ const LoginPage = () => {
                   type="email"
                   value={email}
                   onChange={e => setEmail(e.target.value)}
-                  placeholder="seu@email.com"
+                  placeholder="admin@email.com"
                   className="w-full pl-10 pr-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-black placeholder:text-black transition"
                   disabled={loading}
                   autoComplete="username"
@@ -169,26 +181,26 @@ const LoginPage = () => {
               {loading ? (
                 <>
                   <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>Entrando...</span>
+                  <span>Verificando acesso...</span>
                 </>
               ) : (
                 <>
-                  <LogIn className="w-5 h-5" />
-                  <span>Entrar</span>
+                  <Shield className="w-5 h-5" />
+                  <span>Acessar Painel Admin</span>
                 </>
               )}
             </button>
           </form>
 
-          {/* Link para Registro */}
+          {/* Link para Login Normal */}
           <div className="mt-6 text-center">
             <p className="text-sm text-gray-600">
-              Não tem conta?{' '}
+              Não é administrador?{' '}
               <a
-                href="/register"
+                href="/login"
                 className="text-emerald-600 hover:text-emerald-700 font-medium transition"
               >
-                Criar conta
+                Fazer login normal
               </a>
             </p>
           </div>
@@ -203,4 +215,5 @@ const LoginPage = () => {
   );
 };
 
-export default LoginPage;
+export default AdminLoginPage;
+

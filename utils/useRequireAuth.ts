@@ -10,7 +10,7 @@ export function useRequireAuth() {
 
   useEffect(() => {
     // Rotas públicas que não devem redirecionar
-    const publicPaths = ['/login', '/register'];
+    const publicPaths = ['/login', '/register', '/admin/login'];
 
     // Garante que só roda no cliente
     if (typeof window === 'undefined') return;

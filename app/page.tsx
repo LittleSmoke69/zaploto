@@ -105,9 +105,16 @@ const Dashboard = () => {
 
   const handleDeleteCampaign = async (campaignId: string) => {
     if (!confirm('Tem certeza que deseja excluir esta campanha?')) return;
+    if (!userId) {
+      showToast('Sessão inválida', 'error');
+      return;
+    }
     try {
       const response = await fetch(`/api/campaigns/${campaignId}`, {
         method: 'DELETE',
+        headers: {
+          'X-User-Id': userId,
+        },
       });
       const data = await response.json();
       if (data.success) {

@@ -165,6 +165,7 @@ export interface Database {
           full_name: string | null;
           email: string;
           password_hash: string;      // armazenamos o hash
+          status: string | null;      // 'admin' para administradores
           created_at: string;
           updated_at: string | null;
         };
@@ -173,6 +174,7 @@ export interface Database {
           full_name?: string | null;
           email: string;
           password_hash: string;
+          status?: string | null;
           created_at?: string;
           updated_at?: string | null;
         };
@@ -181,6 +183,7 @@ export interface Database {
           full_name?: string | null;
           email?: string;
           password_hash?: string;
+          status?: string | null;
           created_at?: string;
           updated_at?: string | null;
         };

@@ -13,6 +13,7 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
+  Shield,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -23,6 +24,43 @@ const Sidebar: React.FC<SidebarProps> = ({ onSignOut }) => {
   const pathname = usePathname();
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(true); // Por padrão colapsada
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    const checkAdmin = async () => {
+      if (typeof window === 'undefined') return;
+      
+      const userId = sessionStorage.getItem('user_id') || 
+                     sessionStorage.getItem('profile_id') || 
+                     window.localStorage.getItem('profile_id');
+      
+      if (!userId) {
+        setIsAdmin(false);
+        return;
+      }
+
+      try {
+        const response = await fetch('/api/admin/check', {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-User-Id': userId,
+          },
+          credentials: 'include',
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          setIsAdmin(result.success && result.data?.isAdmin === true);
+        }
+      } catch (error) {
+        console.error('Erro ao verificar admin:', error);
+        setIsAdmin(false);
+      }
+    };
+
+    checkAdmin();
+  }, []);
 
   const menuItems = [
     {
@@ -50,6 +88,12 @@ const Sidebar: React.FC<SidebarProps> = ({ onSignOut }) => {
       icon: Plus,
       label: 'Importar Contatos',
     },
+    // Link para admin apenas se for admin
+    ...(isAdmin ? [{
+      href: '/admin',
+      icon: Shield,
+      label: 'Painel Admin',
+    }] : []),
   ];
 
   const isActive = (href: string) => {
@@ -89,19 +133,19 @@ const Sidebar: React.FC<SidebarProps> = ({ onSignOut }) => {
           transform transition-all duration-300 ease-in-out
           ${isMobileOpen ? 'translate-x-0' : '-translate-x-full'}
           lg:translate-x-0
-          ${isCollapsed ? 'w-20' : 'w-64'}
+          ${isMobileOpen ? 'w-64' : isCollapsed ? 'w-20' : 'w-64'}
         `}
         data-collapsed={isCollapsed}
       >
         {/* Logo e Botão de Toggle */}
         <div className="p-4 border-b border-gray-200 flex items-center justify-between">
-          {!isCollapsed && (
+          {(isMobileOpen || !isCollapsed) && (
             <div className="flex items-center gap-2">
               <span className="text-xl font-bold text-gray-800">ZAP</span>
               <span className="text-xl font-bold text-emerald-500">LOTO</span>
             </div>
           )}
-          {isCollapsed && (
+          {!isMobileOpen && isCollapsed && (
             <div className="flex items-center justify-center w-full">
               <span className="text-lg font-bold text-emerald-500">Z</span>
             </div>
@@ -132,17 +176,17 @@ const Sidebar: React.FC<SidebarProps> = ({ onSignOut }) => {
                 onClick={() => setIsMobileOpen(false)}
                 className={`
                   w-full flex items-center gap-3 px-3 py-3 rounded-lg transition-all duration-200
-                  ${isCollapsed ? 'justify-center' : ''}
+                  ${isMobileOpen ? '' : isCollapsed ? 'justify-center' : ''}
                   ${
                     active
                       ? 'bg-emerald-500 text-white shadow-md'
                       : 'text-gray-700 hover:bg-gray-100'
                   }
                 `}
-                title={isCollapsed ? item.label : undefined}
+                title={isMobileOpen ? undefined : isCollapsed ? item.label : undefined}
               >
                 <Icon className="w-5 h-5 flex-shrink-0" />
-                {!isCollapsed && (
+                {(isMobileOpen || !isCollapsed) && (
                   <span className="font-medium whitespace-nowrap">{item.label}</span>
                 )}
               </Link>

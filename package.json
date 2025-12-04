@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "clean": "rm -rf .next && rm -rf node_modules/.cache",
+    "clean:win": "powershell -ExecutionPolicy Bypass -File ./clean-cache.ps1",
+    "dev:clean": "npm run clean:win && npm run dev"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.81.1",
@@ -28,7 +31,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "baseline-browser-mapping": "^2.8.32",
+    "baseline-browser-mapping": "^2.9.0",
     "concurrently": "^9.2.1",
     "tailwindcss": "^4",
     "tsx": "^4.20.6",
