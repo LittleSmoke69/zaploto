@@ -116,42 +116,157 @@ export async function POST(req: NextRequest) {
       .eq('id', campaignId);
     console.log(`✅ [CAMPANHA ${campaignId}] Status atualizado para 'running'. Processamento iniciando...`);
 
-    // IMPORTANTE: Na Netlify, precisamos garantir que o processamento inicie IMEDIATAMENTE
-    // Inicia o processamento ANTES de retornar a resposta para garantir que comece a executar
-    console.log(`🚀 [CAMPANHA ${campaignId}] Iniciando processamento IMEDIATAMENTE antes de retornar resposta...`);
+    // REESTRUTURAÇÃO: Executa o primeiro request IMEDIATAMENTE antes de retornar a resposta
+    // Isso garante que a campanha comece de fato na Netlify
+    console.log(`🚀 [CAMPANHA ${campaignId}] Executando PRIMEIRO REQUEST IMEDIATAMENTE antes de retornar resposta...`);
     
-    // Processa a campanha de forma assíncrona (não bloqueia a resposta)
-    // IMPORTANTE: Na Netlify, precisamos garantir que a função continue executando
-    // mesmo após retornar a resposta HTTP. Usamos .then() para garantir que a promise
-    // não seja descartada quando a função retornar.
-    const processPromise = processCampaignAsync(campaignId, campaign, jobs, userId);
+    // Extrai informações necessárias para processar o primeiro job
+    const strategy = campaign.strategy || {};
+    const groupId = campaign.group_id;
+    const delayConfig = strategy.delayConfig || {};
+    const preferUserBinding = strategy.preferUserBinding === true;
     
-    // Garante que o processamento comece imediatamente
-    // Aguarda um pequeno delay para garantir que o primeiro job seja iniciado
-    processPromise.catch((err) => {
-      console.error('❌ [CAMPANHA] Erro fatal ao processar campanha assíncrona:', err);
-      console.error('❌ [CAMPANHA] Stack trace:', err?.stack);
-    });
+    // Função auxiliar para normalizar telefone
+    const normalizePhoneNumber = (phone: string): string => {
+      if (!phone) return '';
+      let cleaned = phone.replace(/\D/g, '');
+      if (cleaned.startsWith('5555')) {
+        cleaned = cleaned.substring(2);
+      }
+      if (cleaned.startsWith('55') && !cleaned.startsWith('5555')) {
+        return cleaned;
+      }
+      return `55${cleaned}`;
+    };
+    
+    // Processa o primeiro job IMEDIATAMENTE (se houver)
+    let firstJobProcessed = false;
+    if (jobs.length > 0) {
+      const firstJob = jobs[0];
+      const normalizedPhone = normalizePhoneNumber(firstJob.phone);
+      
+      console.log(`⚡ [CAMPANHA ${campaignId}] Executando PRIMEIRO JOB IMEDIATAMENTE: ${normalizedPhone}`);
+      
+      try {
+        // Executa o primeiro request ANTES de retornar a resposta
+        const result = await evolutionBalancer.addLeadToGroup({
+          userId,
+          groupId,
+          leadPhone: normalizedPhone,
+          preferUserBinding,
+        });
+        
+        console.log(`✅ [CAMPANHA ${campaignId}] PRIMEIRO REQUEST concluído: ${result.success ? 'SUCESSO' : 'FALHA'}`);
+        
+        // Atualiza contato e progresso
+        if (result.success) {
+          await rateLimitService.recordLeadUsage(campaignId, 1, true);
+          await supabaseServiceRole
+            .from('searches')
+            .update({
+              status_add_gp: true,
+              status: 'added',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', firstJob.contactId);
+          
+          await supabaseServiceRole
+            .from('campaigns')
+            .update({
+              processed_contacts: 1,
+              failed_contacts: 0,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', campaignId);
+        } else {
+          await rateLimitService.recordLeadUsage(campaignId, 1, false);
+          await supabaseServiceRole
+            .from('searches')
+            .update({
+              status: 'erro',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', firstJob.contactId);
+          
+          await supabaseServiceRole
+            .from('campaigns')
+            .update({
+              processed_contacts: 0,
+              failed_contacts: 1,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', campaignId);
+        }
+        
+        firstJobProcessed = true;
+      } catch (error: any) {
+        console.error(`❌ [CAMPANHA ${campaignId}] Erro ao processar primeiro job:`, error);
+        await rateLimitService.recordLeadUsage(campaignId, 1, false);
+        await supabaseServiceRole
+          .from('searches')
+          .update({
+            status: 'erro',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', firstJob.contactId);
+        
+        await supabaseServiceRole
+          .from('campaigns')
+          .update({
+            processed_contacts: 0,
+            failed_contacts: 1,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', campaignId);
+      }
+    }
+    
+    // Agora processa os demais jobs de forma assíncrona (se houver)
+    const remainingJobs = firstJobProcessed ? jobs.slice(1) : jobs;
+    
+    if (remainingJobs.length > 0) {
+      console.log(`🔄 [CAMPANHA ${campaignId}] Iniciando processamento assíncrono dos ${remainingJobs.length} jobs restantes...`);
+      
+      // Processa os demais jobs de forma assíncrona
+      const processPromise = processCampaignAsync(campaignId, campaign, remainingJobs, userId);
+      
+      // Garante tratamento de erros
+      processPromise.catch((err) => {
+        console.error('❌ [CAMPANHA] Erro fatal ao processar campanha assíncrona:', err);
+        console.error('❌ [CAMPANHA] Stack trace:', err?.stack);
+      });
+    } else {
+      console.log(`✅ [CAMPANHA ${campaignId}] Todos os jobs foram processados. Finalizando campanha...`);
+      
+      // Se só havia um job, finaliza a campanha
+      const { data: finalCampaign } = await supabaseServiceRole
+        .from('campaigns')
+        .select('processed_contacts, failed_contacts')
+        .eq('id', campaignId)
+        .single();
+      
+      if (finalCampaign) {
+        const finalStatus = finalCampaign.failed_contacts === jobs.length ? 'failed' : 'completed';
+        await supabaseServiceRole
+          .from('campaigns')
+          .update({
+            status: finalStatus,
+            completed_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', campaignId);
+      }
+    }
 
-    // Garante que a promise não seja descartada
-    processPromise.then(() => {
-      console.log(`✅ [CAMPANHA ${campaignId}] Processamento assíncrono concluído`);
-    }).catch(() => {
-      // Já tratado acima
-    });
-
-    // IMPORTANTE: Aguarda um pequeno delay para garantir que o processamento comece
-    // antes de retornar a resposta (especialmente importante na Netlify)
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    console.log(`✅ [CAMPANHA ${campaignId}] Campanha iniciada com sucesso! Total de jobs: ${jobs.length}. Sistema suporta múltiplas campanhas simultâneas.`);
+    console.log(`✅ [CAMPANHA ${campaignId}] Campanha iniciada com sucesso! Primeiro request executado. Total de jobs: ${jobs.length}.`);
     
     return successResponse(
       {
         campaignId,
         status: 'running',
         totalJobs: jobs.length,
-        message: 'Campanha iniciada. Processamento em andamento. Múltiplas campanhas podem rodar simultaneamente.',
+        firstJobProcessed,
+        message: 'Campanha iniciada. Primeiro request executado. Processamento em andamento.',
       },
       'Campanha iniciada com sucesso'
     );
@@ -174,6 +289,10 @@ async function processCampaignAsync(
   
   try {
     console.log(`[${timestamp}] 🚀 [PROCESS_CAMPAIGN_ASYNC] Iniciando processamento IMEDIATO da campanha ${campaignId} - ${jobs.length} jobs`);
+    
+    // CRÍTICO: Executa o primeiro passo IMEDIATAMENTE para garantir que o processamento comece
+    // Isso é especialmente importante na Netlify para evitar que o contexto seja encerrado
+    console.log(`⚡ [PROCESS_CAMPAIGN_ASYNC] Executando primeiro passo IMEDIATAMENTE para garantir início do processamento...`);
 
     const strategy = campaign.strategy || {};
     const groupId = campaign.group_id;
@@ -254,14 +373,30 @@ async function processCampaignAsync(
       }
     };
 
-    // Processa jobs sequencialmente com delay entre cada um
-    // A concorrência é controlada pelo número de instâncias disponíveis
-    let processed = 0;
-    let failed = 0;
-
-    // Processa cada job sequencialmente com delay
-    console.log(`🔄 [CAMPANHA ${campaignId}] Iniciando processamento de ${jobs.length} jobs...`);
-    console.log(`🚀 [CAMPANHA ${campaignId}] PRIMEIRO JOB será executado IMEDIATAMENTE, depois aplicará delay entre os demais`);
+    // IMPORTANTE: O primeiro job já foi processado antes de retornar a resposta HTTP
+    // Aqui processamos apenas os jobs restantes, começando com delay
+    
+    // Busca o progresso atual da campanha (já inclui o primeiro job processado)
+    const { data: currentProgress } = await supabaseServiceRole
+      .from('campaigns')
+      .select('processed_contacts, failed_contacts')
+      .eq('id', campaignId)
+      .single();
+    
+    // Inicializa contadores considerando o primeiro job já processado
+    let processed = currentProgress?.processed_contacts || 0;
+    let failed = currentProgress?.failed_contacts || 0;
+    
+    console.log(`🔄 [CAMPANHA ${campaignId}] Iniciando processamento de ${jobs.length} jobs restantes...`);
+    console.log(`📊 [CAMPANHA ${campaignId}] Progresso inicial: ${processed} processados, ${failed} falhas (primeiro job já executado)`);
+    console.log(`⏳ [CAMPANHA ${campaignId}] Aplicando delay entre os jobs conforme configuração`);
+    
+    // Aplica delay ANTES do primeiro job restante (já que o primeiro foi executado imediatamente)
+    if (jobs.length > 0) {
+      const delay = getDelay();
+      console.log(`⏳ [CAMPANHA ${campaignId}] Aguardando ${delay}ms (${(delay/1000).toFixed(1)}s) antes de processar próximo job...`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
     
     for (let i = 0; i < jobs.length; i++) {
     const job = jobs[i];
