@@ -378,7 +378,7 @@ async function processCampaignAsync(
             
             if (isRateLimit && attempts < maxAttempts) {
               // Calcula delay com backoff baseado no código antigo
-              const baseDelay = delayMs || 2000;
+              const baseDelay = getDelay() || 2000;
               const jitter = 1000 + Math.random() * 2000;
               const waitMs = baseDelay + jitter;
               
@@ -434,7 +434,7 @@ async function processCampaignAsync(
 
             // Outros erros: se não for última tentativa, faz retry com delay
             if (attempts < maxAttempts) {
-              const waitMs = Math.max(delayMs || 2000, 2000);
+              const waitMs = Math.max(getDelay() || 2000, 2000);
               console.log(`⚠️ [CAMPANHA ${campaignId}] Job ${jobNumber}: Erro detectado. Retentando em ${(waitMs / 1000).toFixed(1)}s (tentativa ${attempts}/${maxAttempts})`);
               await new Promise(resolve => setTimeout(resolve, waitMs));
               continue; // Tenta novamente
@@ -460,7 +460,7 @@ async function processCampaignAsync(
           
           // Se não for última tentativa, faz retry
           if (attempts < maxAttempts) {
-            const waitMs = Math.max(delayMs || 2000, 2000);
+            const waitMs = Math.max(getDelay() || 2000, 2000);
             console.log(`⚠️ [CAMPANHA ${campaignId}] Job ${jobNumber}: Exceção. Retentando em ${(waitMs / 1000).toFixed(1)}s (tentativa ${attempts}/${maxAttempts})`);
             await new Promise(resolve => setTimeout(resolve, waitMs));
             continue; // Tenta novamente
