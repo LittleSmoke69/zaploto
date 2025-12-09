@@ -87,8 +87,21 @@ export async function POST(req: NextRequest) {
       .eq('id', campaignId);
 
     // Processa a campanha de forma assíncrona (não bloqueia a resposta)
-    processCampaignAsync(campaignId, campaign, jobs, userId).catch((err) => {
-      console.error('Erro ao processar campanha assíncrona:', err);
+    // IMPORTANTE: Na Netlify, precisamos garantir que a função continue executando
+    // mesmo após retornar a resposta HTTP. Usamos .then() para garantir que a promise
+    // não seja descartada quando a função retornar.
+    const processPromise = processCampaignAsync(campaignId, campaign, jobs, userId);
+    
+    processPromise.catch((err) => {
+      console.error('❌ [CAMPANHA] Erro fatal ao processar campanha assíncrona:', err);
+      console.error('❌ [CAMPANHA] Stack trace:', err?.stack);
+    });
+
+    // Garante que a promise não seja descartada
+    processPromise.then(() => {
+      console.log(`✅ [CAMPANHA ${campaignId}] Processamento assíncrono concluído`);
+    }).catch(() => {
+      // Já tratado acima
     });
 
     return successResponse(
@@ -114,9 +127,11 @@ async function processCampaignAsync(
   jobs: Array<{ contactId: string; phone: string }>,
   userId: string
 ) {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] 🚀 [PROCESS_CAMPAIGN_ASYNC] Função iniciada - Campanha: ${campaignId}, Jobs: ${jobs.length}, UserId: ${userId}`);
+  
   try {
-    const timestamp = new Date().toISOString();
-    console.log(`[${timestamp}] 🚀 Iniciando campanha ${campaignId} - ${jobs.length} jobs`);
+    console.log(`[${timestamp}] 🚀 [PROCESS_CAMPAIGN_ASYNC] Iniciando processamento da campanha ${campaignId} - ${jobs.length} jobs`);
 
     const strategy = campaign.strategy || {};
     const groupId = campaign.group_id;
@@ -244,81 +259,103 @@ async function processCampaignAsync(
         // Normaliza o número de telefone (adiciona 55 se não tiver)
         const normalizedPhone = normalizePhoneNumber(job.phone);
         
-        console.log(`📞 [CAMPANHA ${campaignId}] Job ${jobNumber}: Adicionando ${normalizedPhone} ao grupo ${groupId}`);
+        console.log(`📞 [CAMPANHA ${campaignId}] Job ${jobNumber}/${totalJobs}: Adicionando ${normalizedPhone} ao grupo ${groupId}`);
+        console.log(`🔄 [CAMPANHA ${campaignId}] Job ${jobNumber}: Chamando evolutionBalancer.addLeadToGroup...`);
+        console.log(`🔄 [CAMPANHA ${campaignId}] Job ${jobNumber}: Parâmetros - userId: ${userId}, groupId: ${groupId}, leadPhone: ${normalizedPhone}, preferUserBinding: ${preferUserBinding}`);
         
-        // Usa o balanceador automático para adicionar lead ao grupo
-        // O balanceador distribui automaticamente entre todas as Evolution APIs ativas
-        const result = await evolutionBalancer.addLeadToGroup({
-          userId, // Opcional - usado apenas se preferUserBinding=true
-          groupId,
-          leadPhone: normalizedPhone,
-          preferUserBinding, // Se false, distribui entre todas as APIs
-        });
+        const addStartTime = Date.now();
         
-        console.log(`📊 [CAMPANHA ${campaignId}] Job ${jobNumber}: Resultado - ${result.success ? 'SUCESSO' : 'FALHA'} ${result.error ? `(${result.error})` : ''}`);
+        try {
+          // Usa o balanceador automático para adicionar lead ao grupo
+          // O balanceador distribui automaticamente entre todas as Evolution APIs ativas
+          console.log(`🔄 [CAMPANHA ${campaignId}] Job ${jobNumber}: Iniciando await evolutionBalancer.addLeadToGroup...`);
+          const result = await evolutionBalancer.addLeadToGroup({
+            userId, // Opcional - usado apenas se preferUserBinding=true
+            groupId,
+            leadPhone: normalizedPhone,
+            preferUserBinding, // Se false, distribui entre todas as APIs
+          });
+          console.log(`✅ [CAMPANHA ${campaignId}] Job ${jobNumber}: evolutionBalancer.addLeadToGroup retornou com sucesso`);
+        
+          const addDuration = Date.now() - addStartTime;
+          console.log(`⏱️ [CAMPANHA ${campaignId}] Job ${jobNumber}: addLeadToGroup concluído em ${addDuration}ms`);
+          console.log(`📊 [CAMPANHA ${campaignId}] Job ${jobNumber}: Resultado - ${result.success ? 'SUCESSO' : 'FALHA'} ${result.error ? `(${result.error})` : ''}`);
+          console.log(`📊 [CAMPANHA ${campaignId}] Job ${jobNumber}: Detalhes - errorType: ${result.errorType || 'N/A'}, httpStatus: ${result.httpStatus || 'N/A'}`);
 
-        if (result.success) {
-          processed++;
-          await rateLimitService.recordLeadUsage(campaignId, 1, true);
-          
-          // Atualiza contato no banco - marca como adicionado com sucesso
-          await supabaseServiceRole
-            .from('searches')
-            .update({
-              status_add_gp: true,
-              status: 'added',
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', job.contactId);
-        } else {
-          failed++;
-          await rateLimitService.recordLeadUsage(campaignId, 1, false);
-
-          // Se não há instâncias disponíveis, marca todos os restantes como erro
-          if (result.errorType === 'no_instance_available') {
-            const remaining = jobs.length - i;
-            const remainingJobs = jobs.slice(i);
-            const remainingContactIds = remainingJobs.map(j => j.contactId);
+          if (result.success) {
+            processed++;
+            await rateLimitService.recordLeadUsage(campaignId, 1, true);
             
-            if (remainingContactIds.length > 0) {
-              await supabaseServiceRole
-                .from('searches')
-                .update({
-                  status: 'erro',
-                  updated_at: new Date().toISOString(),
-                })
-                .in('id', remainingContactIds);
-            }
-            console.error(`❌ [CAMPANHA ${campaignId}] Nenhuma instância disponível. ${remaining} jobs restantes marcados como erro.`);
-            break;
-          }
-
-          // Se erro for connection_closed, atualiza status da instância para disconnected
-          if (result.errorType === 'connection_closed' && result.instanceUsed) {
+            // Atualiza contato no banco - marca como adicionado com sucesso
             await supabaseServiceRole
-              .from('evolution_instances')
+              .from('searches')
               .update({
-                status: 'disconnected',
-                is_active: false,
+                status_add_gp: true,
+                status: 'added',
                 updated_at: new Date().toISOString(),
               })
-              .eq('id', result.instanceUsed.id);
-            
-            console.warn(`⚠️ [CAMPANHA ${campaignId}] Instância ${result.instanceUsed.instance_name} marcada como desconectada devido a connection_closed`);
-          }
+              .eq('id', job.contactId);
+          } else {
+            failed++;
+            await rateLimitService.recordLeadUsage(campaignId, 1, false);
 
-          // Marca como 'erro' quando falha
-          await supabaseServiceRole
-            .from('searches')
-            .update({
-              status: 'erro',
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', job.contactId);
+            // Se não há instâncias disponíveis, marca todos os restantes como erro
+            if (result.errorType === 'no_instance_available') {
+              const remaining = jobs.length - i;
+              const remainingJobs = jobs.slice(i);
+              const remainingContactIds = remainingJobs.map(j => j.contactId);
+              
+              if (remainingContactIds.length > 0) {
+                await supabaseServiceRole
+                  .from('searches')
+                  .update({
+                    status: 'erro',
+                    updated_at: new Date().toISOString(),
+                  })
+                  .in('id', remainingContactIds);
+              }
+              console.error(`❌ [CAMPANHA ${campaignId}] Nenhuma instância disponível. ${remaining} jobs restantes marcados como erro.`);
+              break;
+            }
+
+            // Se erro for connection_closed, atualiza status da instância para disconnected
+            if (result.errorType === 'connection_closed' && result.instanceUsed) {
+              await supabaseServiceRole
+                .from('evolution_instances')
+                .update({
+                  status: 'disconnected',
+                  is_active: false,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('id', result.instanceUsed.id);
+              
+              console.warn(`⚠️ [CAMPANHA ${campaignId}] Instância ${result.instanceUsed.instance_name} marcada como desconectada devido a connection_closed`);
+            }
+
+            // Marca como 'erro' quando falha
+            await supabaseServiceRole
+              .from('searches')
+              .update({
+                status: 'erro',
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', job.contactId);
+          }
+        } catch (addError: any) {
+          console.error(`❌ [CAMPANHA ${campaignId}] Erro ao chamar addLeadToGroup no job ${jobNumber}:`, addError);
+          console.error(`❌ [CAMPANHA ${campaignId}] Stack trace do addLeadToGroup:`, addError?.stack);
+          // Re-lança o erro para ser tratado no catch externo
+          throw addError;
         }
       } catch (error: any) {
         failed++;
         console.error(`❌ [CAMPANHA ${campaignId}] Erro ao processar job ${jobNumber}:`, error);
+        console.error(`❌ [CAMPANHA ${campaignId}] Stack trace:`, error?.stack);
+        console.error(`❌ [CAMPANHA ${campaignId}] Erro detalhado:`, {
+          message: error?.message,
+          name: error?.name,
+          code: error?.code,
+        });
         await rateLimitService.recordLeadUsage(campaignId, 1, false);
         
         // Marca como 'erro' em caso de exceção

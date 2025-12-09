@@ -253,8 +253,10 @@ export class EvolutionBalancer {
     const { userId, groupId, leadPhone, preferUserBinding = false } = params;
 
     const startTime = Date.now();
+    console.log(`🚀 [BALANCEADOR] addLeadToGroup iniciado - Lead: ${leadPhone}, Grupo: ${groupId}`);
 
     // 1. Seleciona a melhor instância
+    console.log(`🔍 [BALANCEADOR] Selecionando instância para lead ${leadPhone}...`);
     const instance = await this.pickBestEvolutionInstance({
       userId,
       preferUserBinding,
@@ -274,6 +276,9 @@ export class EvolutionBalancer {
     const { base_url, api_key } = instance.evolution_api;
     const { instance_name } = instance;
 
+    console.log(`✅ [BALANCEADOR] Instância selecionada: ${instance_name} (${base_url})`);
+    console.log(`📞 [BALANCEADOR] Preparando chamada para adicionar ${leadPhone} ao grupo ${groupId}`);
+
     // 2. Faz a chamada à Evolution API usando o serviço existente
     // Mas precisamos usar a base_url da instância selecionada, não a global
     // Para isso, vamos criar uma instância temporária do serviço ou modificar o método
@@ -288,6 +293,7 @@ export class EvolutionBalancer {
     };
 
     try {
+      console.log(`🔄 [BALANCEADOR] Chamando callEvolutionAddParticipants...`);
       // Usa o método existente mas com a base_url específica
       result = await this.callEvolutionAddParticipants(
         base_url,
@@ -296,7 +302,9 @@ export class EvolutionBalancer {
         groupId,
         [leadPhone]
       );
+      console.log(`✅ [BALANCEADOR] callEvolutionAddParticipants concluído - Sucesso: ${result.success}`);
     } catch (error: any) {
+      console.error(`❌ [BALANCEADOR] Erro ao chamar callEvolutionAddParticipants:`, error);
       result = {
         success: false,
         error: error?.message || 'Erro desconhecido',
@@ -306,10 +314,14 @@ export class EvolutionBalancer {
     }
 
     // 3. Atualiza contadores e registra log
+    console.log(`📊 [BALANCEADOR] Processando resultado - Sucesso: ${result.success}, Erro: ${result.error || 'N/A'}`);
     await this.handleInstanceResult(instance, result, {
       groupId,
       leadPhone,
     });
+
+    const totalDuration = Date.now() - startTime;
+    console.log(`🏁 [BALANCEADOR] addLeadToGroup concluído em ${totalDuration}ms - Sucesso: ${result.success}`);
 
     return {
       success: result.success,
@@ -347,7 +359,14 @@ export class EvolutionBalancer {
       participants: participants,
     };
 
+    console.log(`📤 [BALANCEADOR] callEvolutionAddParticipants - URL: ${url}`);
+    console.log(`📤 [BALANCEADOR] Payload:`, JSON.stringify(payload));
+    console.log(`📤 [BALANCEADOR] Headers: apikey presente: ${!!apiKey}`);
+
     try {
+      console.log(`🔄 [BALANCEADOR] Iniciando fetch para Evolution API...`);
+      const fetchStartTime = Date.now();
+      
       const response = await fetch(url, {
         method: 'POST',
         headers: {
@@ -357,13 +376,20 @@ export class EvolutionBalancer {
         body: JSON.stringify(payload),
       });
 
+      const fetchDuration = Date.now() - fetchStartTime;
+      console.log(`⏱️ [BALANCEADOR] Fetch concluído em ${fetchDuration}ms - Status: ${response.status}`);
+
       const responseText = await response.text();
+      console.log(`📥 [BALANCEADOR] Resposta recebida (${responseText.length} caracteres)`);
+      
       let responseData: any = {};
       
       try {
         responseData = JSON.parse(responseText);
+        console.log(`📥 [BALANCEADOR] Resposta JSON parseada:`, JSON.stringify(responseData).substring(0, 200));
       } catch {
         responseData = { message: responseText, raw: responseText };
+        console.log(`📥 [BALANCEADOR] Resposta não é JSON, usando texto:`, responseText.substring(0, 200));
       }
 
       // Tratamento de erros igual ao EvolutionService
@@ -419,6 +445,7 @@ export class EvolutionBalancer {
       }
 
       // Sucesso
+      console.log(`✅ [BALANCEADOR] Sucesso ao adicionar participantes!`);
       return {
         success: true,
         added: participants.length,
@@ -426,6 +453,13 @@ export class EvolutionBalancer {
         responseData,
       };
     } catch (error: any) {
+      console.error(`❌ [BALANCEADOR] Erro no fetch:`, error);
+      console.error(`❌ [BALANCEADOR] Erro detalhado:`, {
+        message: error?.message,
+        name: error?.name,
+        code: error?.code,
+        stack: error?.stack?.substring(0, 500),
+      });
       const isConnectionError = 
         error?.message?.toLowerCase().includes('connection closed') ||
         error?.message?.toLowerCase().includes('econnreset') ||
