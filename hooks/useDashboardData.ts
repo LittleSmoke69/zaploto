@@ -204,7 +204,6 @@ export const useDashboardData = () => {
           .from('campaigns')
           .select('*')
           .eq('user_id', userId)
-          .in('status', ['running', 'paused'])
           .order('created_at', { ascending: false }),
         Promise.all([
           supabase.from('searches').select('*', { count: 'exact', head: true }).eq('user_id', userId).eq('status_disparo', true),
@@ -265,23 +264,28 @@ export const useDashboardData = () => {
   // Polling para atualizar campanhas ativas a cada 5 segundos
   useEffect(() => {
     if (!userId) return;
-    
-    const activeCampaigns = campaigns.filter(
-      c => c.status === 'running' || c.status === 'paused'
-    );
-    
-    if (activeCampaigns.length === 0) return;
 
+    // Verifica se há campanhas ativas antes de iniciar o polling
+    const checkActiveCampaigns = () => {
+      const activeCampaigns = campaigns.filter(
+        c => c.status === 'running' || c.status === 'paused'
+      );
+      return activeCampaigns.length > 0;
+    };
+
+    // Se não houver campanhas ativas, não inicia o polling ainda
+    // Mas vamos iniciar mesmo assim para atualizar histórico periodicamente
     const interval = setInterval(async () => {
       try {
+        // Busca TODAS as campanhas (não apenas ativas) para manter histórico
         const { data, error } = await supabase
           .from('campaigns')
           .select('*')
           .eq('user_id', userId)
-          .in('status', ['running', 'paused'])
           .order('created_at', { ascending: false });
 
         if (!error && data) {
+          // Atualiza todas as campanhas, não apenas as ativas
           setCampaigns(data as Campaign[]);
         }
       } catch (error) {
@@ -290,7 +294,7 @@ export const useDashboardData = () => {
     }, 5000); // Atualiza a cada 5 segundos
 
     return () => clearInterval(interval);
-  }, [userId, campaigns]);
+  }, [userId]); // Remove campaigns das dependências para evitar loops
 
   return {
     userId,

@@ -3,6 +3,7 @@ import { requireAuth } from '@/lib/middleware/auth';
 import { successResponse, errorResponse, serverErrorResponse } from '@/lib/utils/response';
 import { supabaseServiceRole } from '@/lib/services/supabase-service';
 import { evolutionService } from '@/lib/services/evolution-service';
+import { checkInstanceAccess } from '@/lib/utils/instance-access';
 
 /**
  * POST /api/groups/fetch - Busca grupos da Evolution API
@@ -17,17 +18,13 @@ export async function POST(req: NextRequest) {
       return errorResponse('instanceName é obrigatório', 400);
     }
 
-    // Busca a instância e sua Evolution API
-    const { data: userApis } = await supabaseServiceRole
-      .from('user_evolution_apis')
-      .select('evolution_api_id')
-      .eq('user_id', userId);
-
-    if (!userApis || userApis.length === 0) {
-      return errorResponse('Nenhuma Evolution API configurada para este usuário', 404);
+    // Verifica se o usuário tem acesso à instância
+    const hasAccess = await checkInstanceAccess(userId, instanceName);
+    if (!hasAccess) {
+      return errorResponse('Acesso negado. Você não tem permissão para acessar esta instância.', 403);
     }
 
-    const apiIds = userApis.map(ua => ua.evolution_api_id);
+    // Busca a instância e sua Evolution API
     const { data: instance, error: instanceError } = await supabaseServiceRole
       .from('evolution_instances')
       .select(`
@@ -35,11 +32,13 @@ export async function POST(req: NextRequest) {
         evolution_apis!inner (
           id,
           base_url,
-          api_key
+          api_key,
+          is_active
         )
       `)
-      .in('evolution_api_id', apiIds)
       .eq('instance_name', instanceName)
+      .eq('is_active', true)
+      .eq('evolution_apis.is_active', true)
       .single();
 
     if (instanceError || !instance) {

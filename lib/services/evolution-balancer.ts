@@ -63,7 +63,7 @@ export class EvolutionBalancer {
     const { userId, preferUserBinding = false } = options;
     const now = new Date().toISOString();
 
-    // Base query: busca instâncias ativas e disponíveis
+    // Base query: busca TODAS as instâncias ativas e disponíveis (balanceamento global)
     let query = supabaseServiceRole
       .from('evolution_instances')
       .select(`
@@ -80,13 +80,9 @@ export class EvolutionBalancer {
       .eq('status', 'ok')
       .eq('evolution_apis.is_active', true);
 
-    // Filtra cooldown: apenas instâncias que não estão em cooldown
-    // Nota: Supabase não suporta OR direto, então filtramos depois ou usamos uma abordagem diferente
-    // Vamos buscar todas e filtrar em memória para as que estão fora do cooldown
-
-    // Se preferUserBinding e userId fornecido, prioriza instâncias do usuário
+    // Atribuição de usuário é OPCIONAL - apenas prioriza se preferUserBinding=true e usuário tem APIs atribuídas
     if (preferUserBinding && userId) {
-      // Primeiro tenta instâncias vinculadas ao usuário
+      // Tenta priorizar instâncias vinculadas ao usuário (se tiver)
       const { data: userApiBindings } = await supabaseServiceRole
         .from('user_evolution_apis')
         .select('evolution_api_id')
@@ -94,8 +90,30 @@ export class EvolutionBalancer {
 
       if (userApiBindings && userApiBindings.length > 0) {
         const userApiIds = userApiBindings.map((b) => b.evolution_api_id);
-        query = query.in('evolution_api_id', userApiIds);
+        // Primeiro tenta apenas APIs do usuário
+        const userQuery = query.in('evolution_api_id', userApiIds);
+        const { data: userCandidates } = await userQuery;
+
+        // Se encontrou instâncias do usuário, usa apenas elas
+        if (userCandidates && userCandidates.length > 0) {
+          const available = userCandidates.filter((inst: any) => {
+            if (inst.cooldown_until) {
+              const cooldownUntil = new Date(inst.cooldown_until);
+              if (cooldownUntil > new Date()) return false;
+            }
+            if (inst.daily_limit !== null && inst.sent_today >= inst.daily_limit) {
+              return false;
+            }
+            return true;
+          });
+
+          if (available.length > 0) {
+            // Calcula score e retorna melhor instância do usuário
+            return await this.selectBestFromCandidates(available, now);
+          }
+        }
       }
+      // Se não encontrou do usuário ou preferUserBinding=false, continua com todas as instâncias
     }
 
     // Executa query
@@ -107,10 +125,6 @@ export class EvolutionBalancer {
     }
 
     if (!candidates || candidates.length === 0) {
-      // Se preferUserBinding e não encontrou do usuário, tenta qualquer instância
-      if (preferUserBinding && userId) {
-        return this.pickBestEvolutionInstance({ ...options, preferUserBinding: false });
-      }
       return null;
     }
 
@@ -136,8 +150,24 @@ export class EvolutionBalancer {
       return null;
     }
 
+    // Seleciona melhor candidato
+    return this.selectBestFromCandidates(availableCandidates, now);
+  }
+
+  /**
+   * Método auxiliar para selecionar a melhor instância de uma lista de candidatos
+   */
+  private async selectBestFromCandidates(candidates: any[], now: string): Promise<EvolutionInstance | null> {
+    if (candidates.length === 0) return null;
+
+    console.log(`\n📊 [BALANCEADOR] Selecionando melhor instância entre ${candidates.length} candidato(s)`);
+
     // Calcula score para cada candidato e seleciona o melhor
-    const scored = availableCandidates.map((inst: any) => {
+    const scored = candidates.map((inst: any) => {
+      const evolutionApi = Array.isArray(inst.evolution_apis) 
+        ? inst.evolution_apis[0] 
+        : inst.evolution_apis;
+
       const lastUsedAt = inst.last_used_at ? new Date(inst.last_used_at).getTime() : 0;
       const secondsSinceLastUse = lastUsedAt > 0 
         ? (Date.now() - lastUsedAt) / 1000 
@@ -148,17 +178,44 @@ export class EvolutionBalancer {
       const usageScore = 1 / (inst.sent_today + 1);
       const timeScore = Math.min(secondsSinceLastUse / 1000, 100); // Cap em 100
       const randomScore = Math.random() * 0.1; // 0-0.1 para evitar padrão previsível
+      const totalScore = usageScore + timeScore + randomScore;
 
       return {
         instance: inst,
-        score: usageScore + timeScore + randomScore,
+        score: totalScore,
+        metrics: {
+          instanceName: inst.instance_name,
+          evolutionApi: evolutionApi?.name || 'N/A',
+          sentToday: inst.sent_today,
+          errorToday: inst.error_today,
+          dailyLimit: inst.daily_limit,
+          secondsSinceLastUse: Math.round(secondsSinceLastUse),
+          usageScore: usageScore.toFixed(4),
+          timeScore: timeScore.toFixed(2),
+          randomScore: randomScore.toFixed(4),
+          totalScore: totalScore.toFixed(4),
+        },
       };
     });
 
     // Ordena por score (maior primeiro)
     scored.sort((a, b) => b.score - a.score);
 
+    // Log detalhado das top 3 candidatas
+    console.log(`📈 [BALANCEADOR] Top 3 candidatas:`);
+    scored.slice(0, 3).forEach((item, idx) => {
+      console.log(`   ${idx + 1}. ${item.metrics.instanceName} (${item.metrics.evolutionApi})`);
+      console.log(`      Score: ${item.metrics.totalScore} | Enviados hoje: ${item.metrics.sentToday}/${item.metrics.dailyLimit || '∞'} | Tempo desde último uso: ${item.metrics.secondsSinceLastUse}s`);
+    });
+
     const selected = scored[0].instance;
+    const selectedApi = Array.isArray(selected.evolution_apis) 
+      ? selected.evolution_apis[0] 
+      : selected.evolution_apis;
+
+    console.log(`✅ [BALANCEADOR] Instância selecionada: ${selected.instance_name}`);
+    console.log(`   Evolution API: ${selectedApi?.name || 'N/A'} (${selectedApi?.base_url})`);
+    console.log(`   Status: ${selected.status} | Enviados hoje: ${selected.sent_today}/${selected.daily_limit || '∞'}\n`);
 
     // Atualiza last_used_at
     await supabaseServiceRole
@@ -195,6 +252,8 @@ export class EvolutionBalancer {
   async addLeadToGroup(params: AddLeadToGroupParams): Promise<AddLeadResult> {
     const { userId, groupId, leadPhone, preferUserBinding = false } = params;
 
+    const startTime = Date.now();
+
     // 1. Seleciona a melhor instância
     const instance = await this.pickBestEvolutionInstance({
       userId,
@@ -204,6 +263,7 @@ export class EvolutionBalancer {
     });
 
     if (!instance || !instance.evolution_api) {
+      console.log(`❌ [BALANCEADOR] Nenhuma instância disponível para adicionar lead ${leadPhone}`);
       return {
         success: false,
         error: 'Nenhuma instância Evolution disponível no momento. Tente novamente em alguns minutos.',
@@ -213,6 +273,14 @@ export class EvolutionBalancer {
 
     const { base_url, api_key } = instance.evolution_api;
     const { instance_name } = instance;
+    const evolutionApiName = instance.evolution_api.name || 'N/A';
+
+    console.log(`🔄 [BALANCEADOR] Adicionando lead ao grupo`);
+    console.log(`   Lead: ${leadPhone}`);
+    console.log(`   Grupo: ${groupId}`);
+    console.log(`   Instância: ${instance_name}`);
+    console.log(`   Evolution API: ${evolutionApiName} (${base_url})`);
+    console.log(`   Enviados hoje: ${instance.sent_today}/${instance.daily_limit || '∞'}`);
 
     // 2. Faz a chamada à Evolution API usando o serviço existente
     // Mas precisamos usar a base_url da instância selecionada, não a global
@@ -250,6 +318,19 @@ export class EvolutionBalancer {
       groupId,
       leadPhone,
     });
+
+    const duration = Date.now() - startTime;
+    const status = result.success ? '✅ SUCESSO' : '❌ ERRO';
+    
+    console.log(`${status} [BALANCEADOR] Lead processado`);
+    console.log(`   Lead: ${leadPhone}`);
+    console.log(`   Instância: ${instance_name} (${evolutionApiName})`);
+    console.log(`   Tempo: ${duration}ms`);
+    console.log(`   HTTP Status: ${result.httpStatus || 'N/A'}`);
+    if (result.error) {
+      console.log(`   Erro: ${result.error} (${result.errorType || 'unknown'})`);
+    }
+    console.log(`   Novo total enviado hoje: ${instance.sent_today + (result.success ? 1 : 0)}\n`);
 
     return {
       success: result.success,

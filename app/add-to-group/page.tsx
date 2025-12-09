@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useRequireAuth } from '@/utils/useRequireAuth';
 import Layout from '@/components/Layout';
 import { useDashboardData, Contact, WhatsAppInstance, DbGroup, Campaign } from '@/hooks/useDashboardData';
@@ -55,6 +55,9 @@ const AddToGroupPage = () => {
   const [addConcurrency, setAddConcurrency] = useState<number>(2);
   const [addingToGroup, setAddingToGroup] = useState<boolean>(false);
   const [addPaused, setAddPaused] = useState<boolean>(false);
+  const [historyPage, setHistoryPage] = useState<number>(1);
+  const historyItemsPerPage = 10;
+  const activeCampaignsRef = useRef<HTMLDivElement>(null);
 
   const toggleInstanceForAdd = (name: string) => {
     setInstancesForAdd(prev =>
@@ -187,7 +190,18 @@ const AddToGroupPage = () => {
       showToast(`Campanha iniciada! Processando ${contactsToUse.length} contato(s)...`, 'success');
       addLog(`Campanha ${campaign.id} iniciada com sucesso!`, 'success');
       
+      // Recarrega dados imediatamente para mostrar a campanha ativa
       await loadInitialData();
+      
+      // Faz scroll para a seção de campanhas ativas
+      setTimeout(() => {
+        activeCampaignsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 100);
+      
+      // Aguarda um pouco e recarrega novamente para pegar status atualizado
+      setTimeout(async () => {
+        await loadInitialData();
+      }, 2000);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       addLog(`Erro ao adicionar ao grupo: ${msg}`, 'error');
@@ -481,7 +495,7 @@ const AddToGroupPage = () => {
         </div>
 
         {/* Campanhas Ativas */}
-        <div data-tour-id="adicao-campanhas-ativas">
+        <div ref={activeCampaignsRef} data-tour-id="adicao-campanhas-ativas">
           <ActiveCampaigns
             campaigns={campaigns}
             onPause={async (campaignId: string) => {
@@ -551,9 +565,14 @@ const AddToGroupPage = () => {
         <div className="bg-white rounded-xl shadow-md p-6" data-tour-id="adicao-historico">
           <h2 className="text-lg font-semibold text-gray-800 mb-4">Histórico de Campanhas</h2>
           {(() => {
-            const historyCampaigns = campaigns.filter(
-              c => c.status === 'completed' || c.status === 'failed'
-            );
+            const historyCampaigns = campaigns
+              .filter(c => c.status === 'completed' || c.status === 'failed')
+              .sort((a, b) => {
+                // Ordena por data de conclusão ou created_at (mais recentes primeiro)
+                const dateA = a.completed_at ? new Date(a.completed_at).getTime() : new Date(a.created_at).getTime();
+                const dateB = b.completed_at ? new Date(b.completed_at).getTime() : new Date(b.created_at).getTime();
+                return dateB - dateA;
+              });
 
             if (historyCampaigns.length === 0) {
               return (
@@ -563,9 +582,16 @@ const AddToGroupPage = () => {
               );
             }
 
+            // Paginação
+            const totalPages = Math.ceil(historyCampaigns.length / historyItemsPerPage);
+            const startIndex = (historyPage - 1) * historyItemsPerPage;
+            const endIndex = startIndex + historyItemsPerPage;
+            const paginatedCampaigns = historyCampaigns.slice(startIndex, endIndex);
+
             return (
-              <div className="space-y-4">
-                {historyCampaigns.map(campaign => {
+              <>
+                <div className="space-y-4">
+                  {paginatedCampaigns.map(campaign => {
                   const total = campaign.total_contacts || 1;
                   const processed = campaign.processed_contacts || 0;
                   const failed = campaign.failed_contacts || 0;
@@ -696,8 +722,66 @@ const AddToGroupPage = () => {
                       </div>
                     </div>
                   );
-                })}
-              </div>
+                  })}
+                </div>
+
+                {/* Controles de Paginação */}
+                {totalPages > 1 && (
+                  <div className="mt-6 flex items-center justify-between border-t border-gray-200 pt-4">
+                    <div className="text-sm text-gray-600">
+                      Mostrando {startIndex + 1} a {Math.min(endIndex, historyCampaigns.length)} de {historyCampaigns.length} campanhas
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setHistoryPage(prev => Math.max(1, prev - 1))}
+                        disabled={historyPage === 1}
+                        className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition"
+                      >
+                        Anterior
+                      </button>
+                      <div className="flex items-center gap-1">
+                        {Array.from({ length: totalPages }, (_, i) => i + 1)
+                          .filter(page => {
+                            // Mostra sempre primeira, última, atual e 2 ao redor
+                            return (
+                              page === 1 ||
+                              page === totalPages ||
+                              (page >= historyPage - 1 && page <= historyPage + 1)
+                            );
+                          })
+                          .map((page, index, array) => {
+                            // Adiciona "..." quando há gap
+                            const showEllipsis = index > 0 && array[index] - array[index - 1] > 1;
+                            return (
+                              <React.Fragment key={page}>
+                                {showEllipsis && (
+                                  <span className="px-2 text-gray-500">...</span>
+                                )}
+                                <button
+                                  onClick={() => setHistoryPage(page)}
+                                  className={`px-3 py-2 text-sm font-medium rounded-lg transition ${
+                                    historyPage === page
+                                      ? 'bg-emerald-600 text-white'
+                                      : 'text-gray-700 bg-white border border-gray-300 hover:bg-gray-50'
+                                  }`}
+                                >
+                                  {page}
+                                </button>
+                              </React.Fragment>
+                            );
+                          })}
+                      </div>
+                      <button
+                        onClick={() => setHistoryPage(prev => Math.min(totalPages, prev + 1))}
+                        disabled={historyPage === totalPages}
+                        className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition"
+                      >
+                        Próxima
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
             );
           })()}
         </div>

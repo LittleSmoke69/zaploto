@@ -19,17 +19,14 @@ export async function POST(req: NextRequest) {
       return errorResponse('instanceName e groupId são obrigatórios', 400);
     }
 
-    // Busca a instância e sua Evolution API
-    const { data: userApis } = await supabaseServiceRole
-      .from('user_evolution_apis')
-      .select('evolution_api_id')
-      .eq('user_id', userId);
-
-    if (!userApis || userApis.length === 0) {
-      return errorResponse('Nenhuma Evolution API configurada para este usuário', 404);
+    // Verifica se o usuário tem acesso à instância
+    const { checkInstanceAccess } = await import('@/lib/utils/instance-access');
+    const hasAccess = await checkInstanceAccess(userId, instanceName);
+    if (!hasAccess) {
+      return errorResponse('Acesso negado. Você não tem permissão para acessar esta instância.', 403);
     }
 
-    const apiIds = userApis.map(ua => ua.evolution_api_id);
+    // Busca a instância e sua Evolution API
     const { data: instance, error: instanceError } = await supabaseServiceRole
       .from('evolution_instances')
       .select(`
@@ -37,11 +34,13 @@ export async function POST(req: NextRequest) {
         evolution_apis!inner (
           id,
           base_url,
-          api_key
+          api_key,
+          is_active
         )
       `)
-      .in('evolution_api_id', apiIds)
       .eq('instance_name', instanceName)
+      .eq('is_active', true)
+      .eq('evolution_apis.is_active', true)
       .single();
 
     if (instanceError || !instance) {
@@ -118,10 +117,24 @@ export async function POST(req: NextRequest) {
       participants = Object.values(targetGroup.participants);
     }
 
+    // Função para normalizar telefone: adiciona 55 se não tiver, mantém se já tiver
+    const normalizePhoneNumber = (phone: string): string => {
+      // Remove caracteres não numéricos
+      const cleaned = phone.replace(/\D/g, '');
+      
+      // Se já começa com 55, retorna como está
+      if (cleaned.startsWith('55')) {
+        return cleaned;
+      }
+      
+      // Se não começa com 55, adiciona
+      return `55${cleaned}`;
+    };
+
     // Formata os contatos
     const formattedContacts = participants.map((p: any) => {
       // Trata o phoneNumber para extrair apenas o telefone
-      // Exemplo: "553175097323@s.whatsapp.net" -> "3175097323"
+      // Exemplo: "553175097323@s.whatsapp.net" -> "553175097323"
       let telefone = '';
       
       // Prioriza phoneNumber, depois id
@@ -136,11 +149,8 @@ export async function POST(req: NextRequest) {
           .replace('@lid', '')
           .trim();
         
-        // Remove o prefixo do país (55) se existir e o número tiver mais de 11 dígitos
-        // Exemplo: "553175097323" -> "3175097323"
-        if (telefone.startsWith('55') && telefone.length > 11) {
-          telefone = telefone.substring(2);
-        }
+        // Normaliza: adiciona 55 se não tiver, mantém se já tiver
+        telefone = normalizePhoneNumber(telefone);
       }
 
       return {

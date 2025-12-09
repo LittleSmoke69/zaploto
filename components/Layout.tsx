@@ -4,7 +4,6 @@ import React, { useEffect, useState } from 'react';
 import Sidebar from './Sidebar';
 import { useSidebar } from '@/contexts/SidebarContext';
 import { Menu, X } from 'lucide-react';
-import TutorialInitializer from './Tutorial/TutorialInitializer';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -67,7 +66,6 @@ const Layout: React.FC<LayoutProps> = ({ children, onSignOut }) => {
           {children}
         </div>
       </main>
-      <TutorialInitializer />
     </div>
   );
 };

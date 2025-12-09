@@ -5,20 +5,25 @@ import { supabaseServiceRole } from '@/lib/services/supabase-service';
 import { evolutionService } from '@/lib/services/evolution-service';
 import { rateLimitService } from '@/lib/services/rate-limit-service';
 import { getUserEvolutionApi } from '@/lib/services/evolution-api-helper';
+import { evolutionApiSelector } from '@/lib/services/evolution-api-selector';
 
 /**
- * GET /api/instances - Lista todas as instâncias do usuário
- * Agora busca de evolution_instances vinculadas via user_evolution_apis
+ * GET /api/instances - Lista instâncias do usuário
+ * - Admin: vê todas as instâncias
+ * - Usuário normal: vê apenas suas instâncias
  */
 export async function GET(req: NextRequest) {
   try {
     const { userId } = await requireAuth(req);
 
-    // Busca APIs Evolution atribuídas ao usuário
-    const { data: userApis, error: userApisError } = await supabaseServiceRole
-      .from('user_evolution_apis')
-      .select('evolution_api_id')
-      .eq('user_id', userId);
+    // Verifica se o usuário é admin
+    const { data: profile } = await supabaseServiceRole
+      .from('profiles')
+      .select('status')
+      .eq('id', userId)
+      .single();
+
+    const isAdmin = profile?.status === 'admin';
 
     let instances: any[] = [];
     let query = supabaseServiceRole
@@ -31,15 +36,14 @@ export async function GET(req: NextRequest) {
           base_url,
           api_key
         )
-      `);
+      `)
+      .eq('is_active', true); // Apenas instâncias ativas
 
-    // Se o usuário tem APIs atribuídas, filtra por elas
-    if (!userApisError && userApis && userApis.length > 0) {
-      const apiIds = userApis.map(ua => ua.evolution_api_id);
-      query = query.in('evolution_api_id', apiIds);
+    // Se não for admin, filtra apenas instâncias do usuário
+    if (!isAdmin) {
+      query = query.eq('user_id', userId);
     }
-    // Se não tem APIs atribuídas, busca todas as instâncias ativas (fallback)
-    // Isso permite que instâncias criadas apareçam mesmo sem vínculo direto
+    // Se for admin, mostra todas (sem filtro adicional)
 
     const { data, error } = await query.order('created_at', { ascending: false });
 
@@ -112,38 +116,46 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Busca a Evolution API do usuário (ou primeira disponível)
-    const evolutionApi = await getUserEvolutionApi(userId);
-    if (!evolutionApi) {
-      return errorResponse(
-        'Nenhuma Evolution API configurada. Entre em contato com o administrador.',
-        400
-      );
+    // NOVA LÓGICA: Balanceamento automático - seleciona a Evolution API com menor carga
+    // Se o usuário tem APIs atribuídas, tenta usar uma delas primeiro (opcional)
+    let selectedApi = null;
+
+    // Tenta usar API do usuário primeiro (se tiver atribuída) - OPCIONAL
+    const userApi = await getUserEvolutionApi(userId);
+    if (userApi) {
+      const { data: userApiRecord } = await supabaseServiceRole
+        .from('evolution_apis')
+        .select('id, name, base_url, api_key')
+        .eq('base_url', userApi.baseUrl)
+        .eq('api_key', userApi.apiKey)
+        .eq('is_active', true)
+        .single();
+
+      if (userApiRecord) {
+        selectedApi = userApiRecord;
+      }
     }
 
-    // Busca o ID da Evolution API no banco
-    const { data: apiRecord, error: apiError } = await supabaseServiceRole
-      .from('evolution_apis')
-      .select('id')
-      .eq('base_url', evolutionApi.baseUrl)
-      .eq('api_key', evolutionApi.apiKey)
-      .eq('is_active', true)
-      .single();
-
-    if (apiError || !apiRecord) {
-      return errorResponse(
-        'Evolution API não encontrada no banco de dados. Entre em contato com o administrador.',
-        500
-      );
+    // Se não tem API atribuída ou não encontrou, usa balanceamento automático
+    if (!selectedApi) {
+      const balancedApi = await evolutionApiSelector.selectBestEvolutionApiForNewInstance();
+      if (!balancedApi) {
+        return errorResponse(
+          'Nenhuma Evolution API ativa configurada. Configure pelo menos uma Evolution API no painel admin.',
+          400
+        );
+      }
+      selectedApi = balancedApi;
     }
+
+    const apiRecord = { id: selectedApi.id };
 
     const fullNumber = `55${phoneNumber}`;
 
-    // Cria instância na Evolution API usando a API do usuário
-    // Precisamos criar um serviço temporário com a base_url e api_key corretas
+    // Cria instância na Evolution API selecionada pelo balanceador
     const tempEvolutionService = {
-      baseUrl: evolutionApi.baseUrl,
-      masterKey: evolutionApi.apiKey,
+      baseUrl: selectedApi.base_url,
+      masterKey: selectedApi.api_key,
       async createInstance(name: string, number: string, qrcode: boolean = true) {
         const response = await fetch(`${this.baseUrl}/instance/create`, {
           method: 'POST',
@@ -167,6 +179,8 @@ export async function POST(req: NextRequest) {
         return await response.json();
       },
     };
+
+    console.log(`📊 Criando instância ${instanceName} na Evolution API: ${selectedApi.name} (${selectedApi.base_url})`);
 
     const evolutionData = await tempEvolutionService.createInstance(instanceName, fullNumber, true);
 
@@ -216,10 +230,10 @@ export async function POST(req: NextRequest) {
       // Tenta deletar na Evolution se já existe no banco
       try {
         if (evolutionData.hash) {
-          const deleteResponse = await fetch(`${evolutionApi.baseUrl}/instance/delete/${instanceName}`, {
+          const deleteResponse = await fetch(`${selectedApi.base_url}/instance/delete/${instanceName}`, {
             method: 'DELETE',
             headers: {
-              apikey: evolutionApi.apiKey,
+              apikey: selectedApi.api_key,
             },
           });
           if (!deleteResponse.ok) {
@@ -232,7 +246,7 @@ export async function POST(req: NextRequest) {
       return errorResponse('Instância com este nome já existe para esta Evolution API', 400);
     }
 
-    // Salva na nova tabela evolution_instances
+    // Salva na nova tabela evolution_instances com user_id
     const { data: savedInstance, error: dbError } = await supabaseServiceRole
       .from('evolution_instances')
       .insert({
@@ -245,6 +259,7 @@ export async function POST(req: NextRequest) {
         sent_today: 0,
         error_today: 0,
         rate_limit_count_today: 0,
+        user_id: userId, // Vincula a instância ao usuário que criou
       })
       .select()
       .single();
@@ -254,10 +269,10 @@ export async function POST(req: NextRequest) {
       try {
         if (evolutionData.hash) {
           // Cria função temporária para deletar
-          const deleteResponse = await fetch(`${evolutionApi.baseUrl}/instance/delete/${instanceName}`, {
+          const deleteResponse = await fetch(`${selectedApi.base_url}/instance/delete/${instanceName}`, {
             method: 'DELETE',
             headers: {
-              apikey: evolutionApi.apiKey,
+              apikey: selectedApi.api_key,
             },
           });
           if (!deleteResponse.ok) {

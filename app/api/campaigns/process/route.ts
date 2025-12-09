@@ -127,7 +127,8 @@ async function processCampaignAsync(
   const strategy = campaign.strategy || {};
   const groupId = campaign.group_id;
   const delayConfig = strategy.delayConfig || {};
-  const preferUserBinding = strategy.preferUserBinding !== false; // Por padrão, tenta usar instâncias do usuário
+  // Balanceamento automático é sempre ativo - atribuição de usuário é opcional
+  const preferUserBinding = strategy.preferUserBinding === true; // Só prioriza usuário se explicitamente ativado
 
   console.log(`📋 Configurações da Campanha:`, {
     groupId,
@@ -150,9 +151,10 @@ async function processCampaignAsync(
   }
 
   // Verifica se há instâncias disponíveis usando o balanceador
+  // Balanceamento automático distribui carga entre TODAS as Evolution APIs ativas
   const testInstance = await evolutionBalancer.pickBestEvolutionInstance({
     userId,
-    preferUserBinding,
+    preferUserBinding, // Opcional - se false, usa todas as APIs disponíveis
   });
 
   if (!testInstance) {
@@ -168,7 +170,41 @@ async function processCampaignAsync(
     return;
   }
 
-  console.log(`✅ Sistema de balanceamento ativo. Instâncias disponíveis através do balanceador.`);
+  console.log(`✅ Sistema de balanceamento automático ativo. Distribuindo carga entre todas as Evolution APIs disponíveis.`);
+  console.log(`📊 Instância de teste disponível: ${testInstance.instance_name} (Evolution: ${testInstance.evolution_api?.name})`);
+
+  // Busca estatísticas iniciais de todas as instâncias para comparar depois
+  const { data: initialInstances } = await supabaseServiceRole
+    .from('evolution_instances')
+    .select(`
+      id,
+      instance_name,
+      sent_today,
+      error_today,
+      evolution_api_id,
+      evolution_apis!inner (
+        id,
+        name
+      )
+    `)
+    .eq('is_active', true)
+    .eq('status', 'ok');
+
+  const initialStats = (initialInstances || []).map((inst: any) => {
+    const api = Array.isArray(inst.evolution_apis) ? inst.evolution_apis[0] : inst.evolution_apis;
+    return {
+      instanceName: inst.instance_name,
+      evolutionApi: api?.name || 'N/A',
+      sentToday: inst.sent_today,
+      errorToday: inst.error_today,
+    };
+  });
+
+  console.log(`\n📊 [BALANCEAMENTO] Estatísticas iniciais das instâncias:`);
+  initialStats.forEach((stat: any) => {
+    console.log(`   ${stat.instanceName} (${stat.evolutionApi}): ${stat.sentToday} enviados, ${stat.errorToday} erros`);
+  });
+  console.log('');
 
   // Função para normalizar número de telefone (adiciona 55 se não tiver)
   const normalizePhoneNumber = (phone: string): string => {
@@ -310,13 +346,31 @@ async function processCampaignAsync(
         });
       }
       
-      // Usa o balanceador para adicionar lead ao grupo
+      // Usa o balanceador automático para adicionar lead ao grupo
+      // O balanceador distribui automaticamente entre todas as Evolution APIs ativas
+      const leadStartTime = Date.now();
       const result = await evolutionBalancer.addLeadToGroup({
-        userId,
+        userId, // Opcional - usado apenas se preferUserBinding=true
         groupId,
         leadPhone: normalizedPhone,
-        preferUserBinding,
+        preferUserBinding, // Se false, distribui entre todas as APIs
       });
+      const leadDuration = Date.now() - leadStartTime;
+
+      // Log detalhado do resultado
+      if (result.instanceUsed) {
+        logDetail(result.success ? 'success' : 'error', `Lead ${result.success ? 'adicionado' : 'falhou'}`, {
+          jobNumber,
+          contactId: job.contactId,
+          phone: normalizedPhone,
+          instanceName: result.instanceUsed.instance_name,
+          instanceId: result.instanceUsed.id,
+          evolutionApiId: result.instanceUsed.evolution_api_id,
+          httpStatus: result.httpStatus,
+          errorType: result.errorType,
+          duration: `${leadDuration}ms`,
+        });
+      }
 
       const duration = Date.now() - startTime;
 
@@ -426,6 +480,36 @@ async function processCampaignAsync(
     if ((i + 1) % 5 === 0 || i === jobs.length - 1) {
       const progressPercentage = Math.round(((processed + failed) / jobs.length) * 100);
       
+      // Busca estatísticas atuais para comparar distribuição
+      const { data: currentInstances } = await supabaseServiceRole
+        .from('evolution_instances')
+        .select(`
+          id,
+          instance_name,
+          sent_today,
+          error_today,
+          evolution_api_id,
+          evolution_apis!inner (
+            id,
+            name
+          )
+        `)
+        .eq('is_active', true)
+        .eq('status', 'ok');
+
+      const currentStats = (currentInstances || []).map((inst: any) => {
+        const api = Array.isArray(inst.evolution_apis) ? inst.evolution_apis[0] : inst.evolution_apis;
+        const initial = initialStats.find((s: any) => s.instanceName === inst.instance_name);
+        const sentInCampaign = initial ? (inst.sent_today - initial.sentToday) : inst.sent_today;
+        return {
+          instanceName: inst.instance_name,
+          evolutionApi: api?.name || 'N/A',
+          sentToday: inst.sent_today,
+          sentInCampaign,
+          errorToday: inst.error_today,
+        };
+      });
+
       logDetail('info', `Progresso da campanha atualizado`, {
         processed,
         failed,
@@ -433,6 +517,13 @@ async function processCampaignAsync(
         progress: `${processed + failed}/${jobs.length} (${progressPercentage}%)`,
         successRate: jobs.length > 0 ? `${Math.round((processed / (processed + failed || 1)) * 100)}%` : '0%',
       });
+
+      console.log(`\n📊 [BALANCEAMENTO] Distribuição de carga até agora:`);
+      currentStats.forEach((stat: any) => {
+        console.log(`   ${stat.instanceName} (${stat.evolutionApi}):`);
+        console.log(`      Total enviado hoje: ${stat.sentToday} | Nesta campanha: ${stat.sentInCampaign} | Erros: ${stat.errorToday}`);
+      });
+      console.log('');
 
       await supabaseServiceRole
         .from('campaigns')
@@ -451,9 +542,62 @@ async function processCampaignAsync(
     }
   }
 
+  // Busca estatísticas finais para comparar distribuição
+  const { data: finalInstances } = await supabaseServiceRole
+    .from('evolution_instances')
+    .select(`
+      id,
+      instance_name,
+      sent_today,
+      error_today,
+      evolution_api_id,
+      evolution_apis!inner (
+        id,
+        name
+      )
+    `)
+    .eq('is_active', true)
+    .eq('status', 'ok');
+
+  const finalStats = (finalInstances || []).map((inst: any) => {
+    const api = Array.isArray(inst.evolution_apis) ? inst.evolution_apis[0] : inst.evolution_apis;
+    const initial = initialStats.find((s: any) => s.instanceName === inst.instance_name);
+    const sentInCampaign = initial ? (inst.sent_today - initial.sentToday) : inst.sent_today;
+    const errorInCampaign = initial ? (inst.error_today - initial.errorToday) : inst.error_today;
+    return {
+      instanceName: inst.instance_name,
+      evolutionApi: api?.name || 'N/A',
+      sentToday: inst.sent_today,
+      sentInCampaign,
+      errorToday: inst.error_today,
+      errorInCampaign,
+      percentage: processed > 0 ? Math.round((sentInCampaign / processed) * 100) : 0,
+    };
+  });
+
   // Finaliza campanha
   const finalStatus = failed === jobs.length ? 'failed' : 'completed';
   const successRate = jobs.length > 0 ? Math.round((processed / jobs.length) * 100) : 0;
+  
+  console.log(`\n${'='.repeat(80)}`);
+  console.log(`[${new Date().toISOString()}] ✅ CAMPANHA FINALIZADA`);
+  console.log(`${'='.repeat(80)}`);
+  console.log(`Campanha ID: ${campaignId}`);
+  console.log(`Grupo: ${campaign.group_subject || campaign.group_id}`);
+  console.log(`Processados: ${processed}`);
+  console.log(`Falhas: ${failed}`);
+  console.log(`Total: ${jobs.length}`);
+  console.log(`Taxa de sucesso: ${successRate}%`);
+  console.log(`${'='.repeat(80)}`);
+  console.log(`\n📊 [BALANCEAMENTO] Relatório final de distribuição:`);
+  console.log(`${'='.repeat(80)}`);
+  finalStats.forEach((stat: any) => {
+    console.log(`   ${stat.instanceName} (${stat.evolutionApi}):`);
+    console.log(`      Enviados nesta campanha: ${stat.sentInCampaign} (${stat.percentage}% da carga)`);
+    console.log(`      Erros nesta campanha: ${stat.errorInCampaign}`);
+    console.log(`      Total enviado hoje: ${stat.sentToday}`);
+  });
+  console.log(`${'='.repeat(80)}\n`);
   
   logDetail(
     finalStatus === 'completed' ? 'success' : 'error',
@@ -465,6 +609,7 @@ async function processCampaignAsync(
       processed,
       failed,
       successRate: `${successRate}%`,
+      distribution: finalStats,
       summary: {
         total: jobs.length,
         success: processed,

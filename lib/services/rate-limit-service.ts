@@ -89,78 +89,20 @@ export class RateLimitService {
 
   /**
    * Verifica se o usuário pode criar mais instâncias
-   * Agora usa evolution_instances vinculadas via user_evolution_apis
+   * Agora conta TODAS as instâncias do sistema (balanceamento global)
+   * Atribuição de usuário é opcional, então não filtra por user_evolution_apis
    */
   async checkInstanceLimit(userId: string): Promise<{ allowed: boolean; current: number; max: number; reason?: string }> {
     // Busca configurações do usuário
     const settings = await this.getUserSettings(userId);
     const maxInstances = settings.maxInstances;
 
-    // Busca APIs Evolution atribuídas ao usuário
-    const { data: userApis, error: userApisError } = await supabaseServiceRole
-      .from('user_evolution_apis')
-      .select('evolution_api_id')
-      .eq('user_id', userId);
-
-    if (userApisError) {
-      console.error('Erro ao buscar APIs do usuário:', userApisError);
-      // Se não tem APIs atribuídas, conta todas as instâncias ativas (fallback)
-      const { data: allInstances, error } = await supabaseServiceRole
-        .from('evolution_instances')
-        .select('id', { count: 'exact', head: true });
-
-      if (error) {
-        console.error('Erro ao verificar limite de instâncias:', error);
-        return {
-          allowed: true,
-          current: 0,
-          max: maxInstances,
-        };
-      }
-
-      const current = allInstances?.length || 0;
-      const allowed = current < maxInstances;
-
-      return {
-        allowed,
-        current,
-        max: maxInstances,
-        reason: !allowed ? `Limite de ${maxInstances} instâncias atingido` : undefined,
-      };
-    }
-
-    // Se não tem APIs atribuídas, conta todas as instâncias
-    if (!userApis || userApis.length === 0) {
-      const { data: allInstances, error } = await supabaseServiceRole
-        .from('evolution_instances')
-        .select('id', { count: 'exact', head: true });
-
-      if (error) {
-        console.error('Erro ao verificar limite de instâncias:', error);
-        return {
-          allowed: true,
-          current: 0,
-          max: maxInstances,
-        };
-      }
-
-      const current = allInstances?.length || 0;
-      const allowed = current < maxInstances;
-
-      return {
-        allowed,
-        current,
-        max: maxInstances,
-        reason: !allowed ? `Limite de ${maxInstances} instâncias atingido` : undefined,
-      };
-    }
-
-    // Busca instâncias das APIs do usuário
-    const apiIds = userApis.map(ua => ua.evolution_api_id);
+    // Conta TODAS as instâncias ativas do sistema (balanceamento global)
+    // Isso permite que o sistema distribua carga entre todas as Evolution APIs
     const { data: instances, error } = await supabaseServiceRole
       .from('evolution_instances')
-      .select('id')
-      .in('evolution_api_id', apiIds);
+      .select('id', { count: 'exact', head: true })
+      .eq('is_active', true);
 
     if (error) {
       console.error('Erro ao verificar limite de instâncias:', error);

@@ -4,6 +4,7 @@ import { successResponse, errorResponse, serverErrorResponse } from '@/lib/utils
 import { supabaseServiceRole } from '@/lib/services/supabase-service';
 import { evolutionService } from '@/lib/services/evolution-service';
 import { getUserEvolutionApi } from '@/lib/services/evolution-api-helper';
+import { checkInstanceAccess } from '@/lib/utils/instance-access';
 
 /**
  * GET /api/instances/[instanceName] - Busca uma instância específica
@@ -16,18 +17,13 @@ export async function GET(
     const { userId } = await requireAuth(req);
     const { instanceName } = await params;
 
-    // Busca APIs Evolution atribuídas ao usuário
-    const { data: userApis } = await supabaseServiceRole
-      .from('user_evolution_apis')
-      .select('evolution_api_id')
-      .eq('user_id', userId);
-
-    if (!userApis || userApis.length === 0) {
-      return errorResponse('Instância não encontrada', 404);
+    // Verifica se o usuário tem acesso à instância
+    const hasAccess = await checkInstanceAccess(userId, instanceName);
+    if (!hasAccess) {
+      return errorResponse('Acesso negado. Você não tem permissão para acessar esta instância.', 403);
     }
 
-    // Busca instância nas APIs do usuário
-    const apiIds = userApis.map(ua => ua.evolution_api_id);
+    // Busca a instância
     const { data, error } = await supabaseServiceRole
       .from('evolution_instances')
       .select(`
@@ -36,11 +32,13 @@ export async function GET(
           id,
           name,
           base_url,
-          api_key
+          api_key,
+          is_active
         )
       `)
-      .in('evolution_api_id', apiIds)
       .eq('instance_name', instanceName)
+      .eq('is_active', true)
+      .eq('evolution_apis.is_active', true)
       .single();
 
     if (error || !data) {
@@ -77,18 +75,13 @@ export async function DELETE(
     const { userId } = await requireAuth(req);
     const { instanceName } = await params;
 
-    // Busca APIs Evolution atribuídas ao usuário
-    const { data: userApis } = await supabaseServiceRole
-      .from('user_evolution_apis')
-      .select('evolution_api_id')
-      .eq('user_id', userId);
-
-    if (!userApis || userApis.length === 0) {
-      return errorResponse('Instância não encontrada', 404);
+    // Verifica se o usuário tem acesso à instância
+    const hasAccess = await checkInstanceAccess(userId, instanceName);
+    if (!hasAccess) {
+      return errorResponse('Acesso negado. Você não tem permissão para deletar esta instância.', 403);
     }
 
     // Busca a instância
-    const apiIds = userApis.map(ua => ua.evolution_api_id);
     const { data: instance, error: fetchError } = await supabaseServiceRole
       .from('evolution_instances')
       .select(`
@@ -96,11 +89,13 @@ export async function DELETE(
         evolution_apis!inner (
           id,
           base_url,
-          api_key
+          api_key,
+          is_active
         )
       `)
-      .in('evolution_api_id', apiIds)
       .eq('instance_name', instanceName)
+      .eq('is_active', true)
+      .eq('evolution_apis.is_active', true)
       .single();
 
     if (fetchError || !instance) {

@@ -166,7 +166,6 @@ export interface Database {
           email: string;
           password_hash: string;      // armazenamos o hash
           status: string | null;      // 'admin' para administradores
-          tutorial_acess: boolean | null; // controle de acesso ao tutorial
           created_at: string;
           updated_at: string | null;
         };
@@ -176,7 +175,6 @@ export interface Database {
           email: string;
           password_hash: string;
           status?: string | null;
-          tutorial_acess?: boolean | null;
           created_at?: string;
           updated_at?: string | null;
         };
@@ -186,7 +184,6 @@ export interface Database {
           email?: string;
           password_hash?: string;
           status?: string | null;
-          tutorial_acess?: boolean | null;
           created_at?: string;
           updated_at?: string | null;
         };
@@ -350,6 +347,7 @@ export interface Database {
           rate_limit_count_today: number;
           last_used_at: string | null;
           cooldown_until: string | null;
+          user_id: string | null; // ID do usuário que criou a instância
           created_at: string;
           updated_at: string;
         };
@@ -366,6 +364,7 @@ export interface Database {
           rate_limit_count_today?: number;
           last_used_at?: string | null;
           cooldown_until?: string | null;
+          user_id?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -382,6 +381,7 @@ export interface Database {
           rate_limit_count_today?: number;
           last_used_at?: string | null;
           cooldown_until?: string | null;
+          user_id?: string | null;
           created_at?: string;
           updated_at?: string;
         };
