@@ -377,17 +377,18 @@ async function processCampaignAsync(
     console.error('Stack trace:', error?.stack);
     
     // Marca campanha como falha em caso de erro fatal
-    await supabaseServiceRole
-      .from('campaigns')
-      .update({
-        status: 'failed',
-        updated_at: new Date().toISOString(),
-        completed_at: new Date().toISOString(),
-      })
-      .eq('id', campaignId)
-      .catch((updateError) => {
-        console.error(`❌ Erro ao atualizar status da campanha para failed:`, updateError);
-      });
+    try {
+      await supabaseServiceRole
+        .from('campaigns')
+        .update({
+          status: 'failed',
+          updated_at: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+        })
+        .eq('id', campaignId);
+    } catch (updateError: any) {
+      console.error(`❌ Erro ao atualizar status da campanha para failed:`, updateError);
+    }
   }
 }
 
