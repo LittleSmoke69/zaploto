@@ -58,13 +58,15 @@ export async function GET(
     const qrCode = evolutionService.extractQr(evolutionData);
 
     // Mapeia status para o novo formato
+    // IMPORTANTE: 'ok' no banco significa CONECTADO, não 'connecting'
+    // 'connecting' significa aguardando QR code ser escaneado
     let newStatus = instance.status;
     if (state === 'connected') {
-      newStatus = 'ok';
+      newStatus = 'ok'; // Conectado
     } else if (state === 'disconnected') {
-      newStatus = 'disconnected';
+      newStatus = 'disconnected'; // Desconectado
     } else if (state === 'connecting') {
-      newStatus = 'ok'; // Mantém como ok durante conexão
+      newStatus = 'disconnected'; // Aguardando QR code = ainda desconectado
     }
 
     // Atualiza no banco

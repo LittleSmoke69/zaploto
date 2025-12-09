@@ -47,8 +47,9 @@ const QRCodeModal: React.FC<QRCodeModalProps> = ({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
       onClick={(e) => {
-        // Fecha ao clicar no overlay (fundo escuro)
-        if (e.target === e.currentTarget) {
+        // Só permite fechar clicando no overlay se o QR expirou ou se o timer chegou a 0
+        // Caso contrário, o modal permanece aberto durante os 30 segundos
+        if (e.target === e.currentTarget && (qrExpired || qrTimer === 0)) {
           onClose();
         }
       }}

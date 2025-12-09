@@ -56,10 +56,25 @@ export async function GET(req: NextRequest) {
           ? inst.evolution_apis[0] 
           : inst.evolution_apis;
 
+        // Mapeia status do banco para o frontend
+        // 'ok' no banco = 'connected' no frontend (conectado)
+        // 'disconnected' no banco = pode ser 'disconnected' ou 'connecting' (aguardando QR)
+        // Para saber se está 'connecting', precisamos verificar se tem QR code pendente
+        let frontendStatus: string;
+        if (inst.status === 'ok') {
+          frontendStatus = 'connected';
+        } else if (inst.status === 'disconnected') {
+          // Se está desconectado, pode estar aguardando QR code
+          // Por padrão, assumimos 'connecting' se foi criado recentemente
+          frontendStatus = 'connecting';
+        } else {
+          frontendStatus = inst.status;
+        }
+
         return {
           id: inst.id,
           instance_name: inst.instance_name,
-          status: inst.status === 'ok' ? 'connected' : inst.status === 'disconnected' ? 'disconnected' : 'connecting',
+          status: frontendStatus,
           number: inst.phone_number,
           created_at: inst.created_at,
           updated_at: inst.updated_at,
@@ -247,6 +262,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Salva na nova tabela evolution_instances com user_id
+    // Status inicial deve ser 'disconnected' ou 'connecting' - NÃO 'ok' (que significa conectado)
     const { data: savedInstance, error: dbError } = await supabaseServiceRole
       .from('evolution_instances')
       .insert({
@@ -254,7 +270,7 @@ export async function POST(req: NextRequest) {
         instance_name: instanceName,
         phone_number: fullNumber,
         is_active: true,
-        status: 'ok', // Será atualizado quando conectar
+        status: 'disconnected', // Status inicial: desconectado aguardando QR code
         daily_limit: 100, // Padrão
         sent_today: 0,
         error_today: 0,
@@ -286,10 +302,11 @@ export async function POST(req: NextRequest) {
     }
 
     // Retorna dados no formato compatível com o frontend (inclui QR code)
+    // Status deve ser 'connecting' pois ainda não foi escaneado o QR code
     const responseData = {
       id: savedInstance.id,
       instance_name: savedInstance.instance_name,
-      status: 'connecting', // Status inicial para compatibilidade
+      status: 'connecting', // Status inicial: aguardando QR code ser escaneado
       qr_code: qrCodeBase64,
       hash: evolutionData.hash,
       number: savedInstance.phone_number,

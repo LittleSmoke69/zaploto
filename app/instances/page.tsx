@@ -150,21 +150,24 @@ const InstancesPage = () => {
             showToast('Instância criada com sucesso!', 'success');
             addLog(`Instância ${instanceName} criada com QR Code válido`, 'success');
             
-            // Define o QR code e abre o modal ANTES de recarregar os dados
-            setQrCode(cleanQrCode);
-            setQrTimer(QR_WINDOW_SECONDS);
+            // Define o QR code e configura o estado ANTES de abrir o modal
             setQrExpired(false);
+            setQrCode(cleanQrCode);
             setCurrentConnectingInstance(instanceName); // Marca qual instância está conectando
-            setIsQRModalOpen(true); // Abre o modal
+            setQrTimer(QR_WINDOW_SECONDS); // Define o timer primeiro
+            // Abre o modal - o useEffect detectará a abertura e iniciará o timer
+            setIsQRModalOpen(true);
             
             // Limpa os campos
             setInstanceName('');
             setPhoneNumber('');
             
-            // Recarrega os dados DEPOIS de abrir o modal (com pequeno delay para garantir que o modal abra)
-            setTimeout(async () => {
-              await loadInitialData();
-            }, 100);
+            // NÃO recarrega os dados imediatamente após criar a instância
+            // O recarregamento será feito apenas quando:
+            // 1. O usuário verificar o status manualmente
+            // 2. O QR code expirar e precisar gerar novo
+            // 3. A instância realmente conectar (detectado pelo useEffect)
+            // Isso evita verificação prematura que pode marcar como conectada sem escanear
           } else {
             console.warn('QR Code recebido não parece ser válido:', {
               length: cleanQrCode.length,
@@ -173,17 +176,15 @@ const InstancesPage = () => {
             showToast('Instância criada, mas QR Code inválido. Verifique o status da instância.', 'info');
             addLog(`Instância ${instanceName} criada com QR Code inválido. Verifique o status.`, 'info');
             // Ainda tenta exibir, mas pode falhar
-            setQrCode(cleanQrCode);
-            setQrTimer(QR_WINDOW_SECONDS);
             setQrExpired(false);
+            setQrCode(cleanQrCode);
             setCurrentConnectingInstance(instanceName); // Marca qual instância está conectando
+            setQrTimer(QR_WINDOW_SECONDS); // Define o timer primeiro
             setIsQRModalOpen(true); // Abre o modal mesmo com QR inválido
             
             setInstanceName('');
             setPhoneNumber('');
-            setTimeout(async () => {
-              await loadInitialData();
-            }, 100);
+            // NÃO recarrega automaticamente - evita verificação prematura de status
           }
         } else {
           showToast('Instância criada, mas QR Code não foi retornado. Verifique o status da instância.', 'info');
@@ -229,10 +230,10 @@ const InstancesPage = () => {
           showToast('Instância conectada com sucesso!', 'success');
         } else if (data.data.qrCode) {
           // Se tem QR code, abre o modal
-          setQrCode(data.data.qrCode);
-          setQrTimer(QR_WINDOW_SECONDS);
           setQrExpired(false);
-          setIsQRModalOpen(true);
+          setQrCode(data.data.qrCode);
+          setQrTimer(QR_WINDOW_SECONDS); // Define o timer primeiro
+          setIsQRModalOpen(true); // Abre o modal - o useEffect iniciará o timer
         }
         await loadInitialData();
         if (data.data.status !== 'connected') {
@@ -410,38 +411,183 @@ const InstancesPage = () => {
     loadDbGroups();
   }, [loadDbGroups]);
 
+  // Timer do QR Code - inicia quando o modal abre com timer = 30
+  const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const timerStartedRef = useRef<boolean>(false);
+  
+  // Inicia o timer quando o modal abre e o timer é setado para 30
   useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (qrTimer > 0) {
-      setQrExpired(false);
-      interval = setInterval(() => {
-        setQrTimer(prev => {
-          if (prev <= 1) {
-            setQrExpired(true);
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
+    if (!isQRModalOpen || qrTimer !== QR_WINDOW_SECONDS || timerStartedRef.current) {
+      return;
     }
-    return () => { if (interval) clearInterval(interval); };
-  }, [qrTimer]);
 
-  // Verifica se a instância que está conectando realmente conectou
-  // Só fecha o modal se a instância específica que está mostrando o QR code conectou
+    // Limpa timer anterior se existir
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current);
+    }
+
+    setQrExpired(false);
+    timerStartedRef.current = true;
+    
+    // Inicia o timer
+    timerIntervalRef.current = setInterval(() => {
+      setQrTimer(prev => {
+        const newValue = prev - 1;
+        if (newValue <= 0) {
+          // Timer expirou - marca como expirado
+          setQrExpired(true);
+          if (timerIntervalRef.current) {
+            clearInterval(timerIntervalRef.current);
+            timerIntervalRef.current = null;
+          }
+          timerStartedRef.current = false;
+          return 0;
+        }
+        return newValue;
+      });
+    }, 1000);
+
+    // Cleanup
+    return () => {
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = null;
+      }
+      timerStartedRef.current = false;
+    };
+  }, [isQRModalOpen, qrTimer === QR_WINDOW_SECONDS]); // Só inicia quando o timer é setado para 30
+
+  // Limpa o timer quando o modal fecha
   useEffect(() => {
-    if (isQRModalOpen && currentConnectingInstance && instances.length > 0) {
-      // Busca a instância específica que está conectando
-      const targetInstance = instances.find(inst => inst.instance_name === currentConnectingInstance);
-      
-      // Se a instância específica conectou, fecha o modal
-      if (targetInstance && targetInstance.status === 'connected') {
+    if (!isQRModalOpen) {
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = null;
+      }
+      timerStartedRef.current = false;
+    }
+  }, [isQRModalOpen]);
+
+  // Quando o timer expira e a instância não conectou, deleta a instância e fecha o modal
+  useEffect(() => {
+    if (!qrExpired || !isQRModalOpen || !currentConnectingInstance || !userId) {
+      return;
+    }
+
+    // Timer expirou e instância não conectou - deleta a instância
+    const deleteExpiredInstance = async () => {
+      try {
+        console.log(`⏰ Timer expirado para instância ${currentConnectingInstance}. Deletando instância...`);
+        
+        // Deleta a instância via API (que deleta do banco e da Evolution)
+        const response = await fetch(`/api/instances/${currentConnectingInstance}`, {
+          method: 'DELETE',
+          headers: { 'X-User-Id': userId },
+        });
+
+        const data = await response.json();
+        
+        if (response.ok && data.success) {
+          console.log(`✅ Instância ${currentConnectingInstance} deletada com sucesso após expiração do timer.`);
+          showToast('QR Code expirado. Instância removida automaticamente.', 'info');
+        } else {
+          console.error(`❌ Erro ao deletar instância expirada:`, data.error || 'Erro desconhecido');
+          showToast('QR Code expirado. Erro ao remover instância automaticamente.', 'error');
+        }
+
+        // Fecha o modal e limpa o estado
         setIsQRModalOpen(false);
         setQrCode('');
         setQrTimer(0);
+        setQrExpired(false);
         setCurrentConnectingInstance(null);
-        showToast('Instância conectada com sucesso!', 'success');
+
+        // Recarrega os dados para atualizar a lista
+        await loadInitialData();
+      } catch (error) {
+        console.error('❌ Erro ao deletar instância expirada:', error);
+        showToast('Erro ao remover instância expirada', 'error');
+        
+        // Fecha o modal mesmo em caso de erro
+        setIsQRModalOpen(false);
+        setQrCode('');
+        setQrTimer(0);
+        setQrExpired(false);
+        setCurrentConnectingInstance(null);
       }
+    };
+
+    // Executa a deleção após um pequeno delay para garantir que o estado foi atualizado
+    deleteExpiredInstance();
+  }, [qrExpired, isQRModalOpen, currentConnectingInstance, userId, showToast, loadInitialData]);
+
+  // Polling inteligente: verifica status apenas quando o modal está aberto
+  // Verifica a cada 3 segundos se a instância conectou
+  useEffect(() => {
+    if (!isQRModalOpen || !currentConnectingInstance || !userId) {
+      return;
+    }
+
+    // Polling para verificar status da instância enquanto o modal está aberto
+    const checkConnectionStatus = async () => {
+      try {
+        const response = await fetch(`/api/instances/${currentConnectingInstance}/status`, {
+          headers: { 'X-User-Id': userId },
+        });
+        const data = await response.json();
+        
+        if (data.success && data.data) {
+          const status = data.data.status;
+          
+          // Só fecha o modal se o status for EXATAMENTE 'connected'
+          // Não fecha para 'connecting' ou qualquer outro status
+          if (status === 'connected') {
+            console.log(`✅ Instância ${currentConnectingInstance} conectou! Fechando modal QR code.`);
+            setIsQRModalOpen(false);
+            setQrCode('');
+            setQrTimer(0);
+            setCurrentConnectingInstance(null);
+            showToast('Instância conectada com sucesso!', 'success');
+            // Recarrega dados após conectar
+            await loadInitialData();
+          } else if (status === 'connecting' && data.data.qrCode) {
+            // Se ainda está conectando e tem novo QR code, atualiza
+            // Mas NÃO fecha o modal - continua aguardando
+            setQrCode(data.data.qrCode);
+            setQrTimer(QR_WINDOW_SECONDS); // Reseta o timer se houver novo QR
+          }
+        }
+      } catch (error) {
+        console.error('Erro ao verificar status da instância:', error);
+        // Não fecha o modal em caso de erro - continua aguardando
+      }
+    };
+
+    // Verifica imediatamente e depois a cada 3 segundos
+    checkConnectionStatus();
+    const interval = setInterval(checkConnectionStatus, 3000);
+
+    return () => clearInterval(interval);
+  }, [isQRModalOpen, currentConnectingInstance, userId, showToast, loadInitialData]);
+
+  // Verifica se a instância que está conectando realmente conectou (fallback)
+  // Este useEffect é um backup caso o polling acima não detecte
+  useEffect(() => {
+    if (!isQRModalOpen || !currentConnectingInstance || instances.length === 0) {
+      return;
+    }
+
+    // Busca a instância específica que está conectando
+    const targetInstance = instances.find(inst => inst.instance_name === currentConnectingInstance);
+    
+    // Só fecha o modal se o status for EXATAMENTE 'connected'
+    if (targetInstance && targetInstance.status === 'connected') {
+      console.log(`✅ Instância ${currentConnectingInstance} conectou (via fallback)! Fechando modal QR code.`);
+      setIsQRModalOpen(false);
+      setQrCode('');
+      setQrTimer(0);
+      setCurrentConnectingInstance(null);
+      showToast('Instância conectada com sucesso!', 'success');
     }
   }, [instances, isQRModalOpen, currentConnectingInstance, showToast]);
 
@@ -886,9 +1032,11 @@ const InstancesPage = () => {
       <QRCodeModal
         isOpen={isQRModalOpen}
         onClose={() => {
+          // Só permite fechar manualmente - o timer não fecha automaticamente
           setIsQRModalOpen(false);
           setQrCode('');
           setQrTimer(0);
+          setQrExpired(false);
           setCurrentConnectingInstance(null);
         }}
         qrCode={qrCode}
