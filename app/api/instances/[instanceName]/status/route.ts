@@ -53,7 +53,7 @@ export async function GET(
     }
 
     // Verifica status na Evolution
-    const evolutionData = await evolutionService.getConnectionState(instanceName, evolutionApi.api_key);
+    const evolutionData = await evolutionService.getConnectionState(instanceName, evolutionApi.api_key, evolutionApi.base_url);
     const state = evolutionService.extractState(evolutionData);
     const qrCode = evolutionService.extractQr(evolutionData);
 
@@ -135,7 +135,7 @@ export async function POST(
     }
 
     // Reconecta na Evolution
-    const evolutionData = await evolutionService.connectInstance(instanceName, evolutionApi.api_key);
+    const evolutionData = await evolutionService.connectInstance(instanceName, evolutionApi.api_key, evolutionApi.base_url);
     const state = evolutionService.extractState(evolutionData);
     const qrCode = evolutionService.extractQr(evolutionData);
 

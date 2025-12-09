@@ -23,7 +23,6 @@ import {
 import { useSidebar } from '@/contexts/SidebarContext';
 import { supabase } from '@/lib/supabase';
 
-const EVOLUTION_BASE = process.env.NEXT_PUBLIC_EVOLUTION_BASE!;
 const QR_WINDOW_SECONDS = 30;
 
 const InstancesPage = () => {

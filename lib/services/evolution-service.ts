@@ -1,6 +1,3 @@
-const EVOLUTION_BASE = process.env.EVOLUTION_BASE || process.env.NEXT_PUBLIC_EVOLUTION_BASE || '';
-const EVOLUTION_APIKEY = process.env.EVOLUTION_APIKEY || process.env.NEXT_PUBLIC_EVOLUTION_APIKEY || '';
-
 export interface EvolutionInstance {
   instanceName: string;
   number?: string;
@@ -19,23 +16,23 @@ export interface EvolutionGroup {
 }
 
 export class EvolutionService {
-  private baseUrl: string;
-  private masterKey: string;
-
-  constructor() {
-    this.baseUrl = EVOLUTION_BASE;
-    this.masterKey = EVOLUTION_APIKEY;
-  }
-
   /**
    * Cria uma nova instância WhatsApp
+   * @param baseUrl URL base da Evolution API (obtida do banco de dados)
+   * @param apiKey Chave da API (obtida do banco de dados)
    */
-  async createInstance(instanceName: string, number: string, qrcode: boolean = true): Promise<EvolutionInstance> {
-    const response = await fetch(`${this.baseUrl}/instance/create`, {
+  async createInstance(
+    instanceName: string,
+    number: string,
+    baseUrl: string,
+    apiKey: string,
+    qrcode: boolean = true
+  ): Promise<EvolutionInstance> {
+    const response = await fetch(`${baseUrl}/instance/create`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        apikey: this.masterKey,
+        apikey: apiKey,
       },
       body: JSON.stringify({
         instanceName,
@@ -55,9 +52,10 @@ export class EvolutionService {
 
   /**
    * Verifica o status de conexão de uma instância
+   * @param baseUrl URL base da Evolution API (obtida do banco de dados)
    */
-  async getConnectionState(instanceName: string, apiKey: string): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/instance/connectionState/${instanceName}`, {
+  async getConnectionState(instanceName: string, apiKey: string, baseUrl: string): Promise<any> {
+    const response = await fetch(`${baseUrl}/instance/connectionState/${instanceName}`, {
       method: 'GET',
       headers: {
         apikey: apiKey,
@@ -74,9 +72,10 @@ export class EvolutionService {
 
   /**
    * Conecta/reconecta uma instância
+   * @param baseUrl URL base da Evolution API (obtida do banco de dados)
    */
-  async connectInstance(instanceName: string, apiKey: string): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/instance/connect/${instanceName}`, {
+  async connectInstance(instanceName: string, apiKey: string, baseUrl: string): Promise<any> {
+    const response = await fetch(`${baseUrl}/instance/connect/${instanceName}`, {
       method: 'GET',
       headers: {
         apikey: apiKey,
@@ -93,9 +92,10 @@ export class EvolutionService {
 
   /**
    * Deleta uma instância
+   * @param baseUrl URL base da Evolution API (obtida do banco de dados)
    */
-  async deleteInstance(instanceName: string, apiKey: string): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/instance/delete/${instanceName}`, {
+  async deleteInstance(instanceName: string, apiKey: string, baseUrl: string): Promise<void> {
+    const response = await fetch(`${baseUrl}/instance/delete/${instanceName}`, {
       method: 'DELETE',
       headers: {
         apikey: apiKey,
@@ -110,9 +110,10 @@ export class EvolutionService {
 
   /**
    * Busca todos os grupos de uma instância
+   * @param baseUrl URL base da Evolution API (obtida do banco de dados)
    */
-  async fetchAllGroups(instanceName: string, apiKey: string, getParticipants: boolean = true): Promise<EvolutionGroup[]> {
-    const url = `${this.baseUrl}/group/fetchAllGroups/${instanceName}?getParticipants=${getParticipants}`;
+  async fetchAllGroups(instanceName: string, apiKey: string, baseUrl: string, getParticipants: boolean = true): Promise<EvolutionGroup[]> {
+    const url = `${baseUrl}/group/fetchAllGroups/${instanceName}?getParticipants=${getParticipants}`;
     
     const response = await fetch(url, {
       method: 'GET',
@@ -166,12 +167,14 @@ export class EvolutionService {
    * Adiciona participantes a um grupo
    * Retorna resultado detalhado com tratamento de erros específicos
    * groupId é passado como parâmetro na URL
+   * @param baseUrl URL base da Evolution API (obtida do banco de dados)
    */
   async addParticipantsToGroup(
     instanceName: string,
     apiKey: string,
     groupId: string,
-    participants: string[]
+    participants: string[],
+    baseUrl: string
   ): Promise<{
     success: boolean;
     error?: string;
@@ -182,7 +185,7 @@ export class EvolutionService {
   }> {
     const startTime = Date.now();
     // Passa groupJid como parâmetro na URL (a API Evolution espera 'groupJid', não 'groupId')
-    const url = `${this.baseUrl}/group/updateParticipant/${instanceName}?groupJid=${encodeURIComponent(groupId)}`;
+    const url = `${baseUrl}/group/updateParticipant/${instanceName}?groupJid=${encodeURIComponent(groupId)}`;
     const payload = {
       action: 'add',
       participants: participants,

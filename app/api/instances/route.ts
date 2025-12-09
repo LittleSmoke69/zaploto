@@ -36,8 +36,7 @@ export async function GET(req: NextRequest) {
           base_url,
           api_key
         )
-      `)
-      .eq('is_active', true); // Apenas instâncias ativas
+      `);
 
     // Se não for admin, filtra apenas instâncias do usuário
     if (!isAdmin) {
@@ -50,8 +49,14 @@ export async function GET(req: NextRequest) {
     if (error) {
       console.error('Erro ao buscar instâncias:', error);
     } else {
+      // Filtra para mostrar instâncias ativas OU conectadas (status = 'ok')
+      // Isso garante que instâncias conectadas apareçam mesmo se is_active for false temporariamente
+      const filteredData = (data || []).filter((inst: any) => 
+        inst.is_active === true || inst.status === 'ok'
+      );
+      
       // Converte para formato compatível com o frontend
-      instances = (data || []).map((inst: any) => {
+      instances = filteredData.map((inst: any) => {
         const evolutionApi = Array.isArray(inst.evolution_apis) 
           ? inst.evolution_apis[0] 
           : inst.evolution_apis;
@@ -83,6 +88,13 @@ export async function GET(req: NextRequest) {
           user_id: userId, // Adiciona para compatibilidade
         };
       });
+    }
+
+    // Log para debug (remover em produção se necessário)
+    console.log(`[API Instances] Retornando ${instances.length} instância(s) para usuário ${userId}`);
+    if (instances.length > 0) {
+      const connectedCount = instances.filter((i: any) => i.status === 'connected').length;
+      console.log(`[API Instances] ${connectedCount} instância(s) conectada(s)`);
     }
 
     // Busca limite de instâncias do usuário

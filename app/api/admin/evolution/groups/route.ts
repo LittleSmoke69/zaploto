@@ -52,6 +52,7 @@ export async function GET(req: NextRequest) {
           const groups = await evolutionService.fetchAllGroups(
             firstInstance.instance_name,
             firstInstance.evolution_api.api_key,
+            firstInstance.evolution_api.base_url,
             false // Não precisa de participantes para listagem
           );
           evolutionGroups = groups.map((g: any) => ({

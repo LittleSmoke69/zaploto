@@ -234,7 +234,7 @@ export class RateLimitService {
     // Atualiza status baseado no tipo de erro (compatível com o novo sistema)
     let newStatus = instance.status;
     if (errorType === 'connection_closed') {
-      newStatus = 'blocked'; // Número banido/desconectado
+      newStatus = 'disconnected'; // Número desconectado/banido
     } else if (errorType === 'rate_limit') {
       newStatus = 'rate_limited'; // Temporariamente suspenso
     } else {

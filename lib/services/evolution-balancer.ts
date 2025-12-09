@@ -273,14 +273,6 @@ export class EvolutionBalancer {
 
     const { base_url, api_key } = instance.evolution_api;
     const { instance_name } = instance;
-    const evolutionApiName = instance.evolution_api.name || 'N/A';
-
-    console.log(`🔄 [BALANCEADOR] Adicionando lead ao grupo`);
-    console.log(`   Lead: ${leadPhone}`);
-    console.log(`   Grupo: ${groupId}`);
-    console.log(`   Instância: ${instance_name}`);
-    console.log(`   Evolution API: ${evolutionApiName} (${base_url})`);
-    console.log(`   Enviados hoje: ${instance.sent_today}/${instance.daily_limit || '∞'}`);
 
     // 2. Faz a chamada à Evolution API usando o serviço existente
     // Mas precisamos usar a base_url da instância selecionada, não a global
@@ -318,19 +310,6 @@ export class EvolutionBalancer {
       groupId,
       leadPhone,
     });
-
-    const duration = Date.now() - startTime;
-    const status = result.success ? '✅ SUCESSO' : '❌ ERRO';
-    
-    console.log(`${status} [BALANCEADOR] Lead processado`);
-    console.log(`   Lead: ${leadPhone}`);
-    console.log(`   Instância: ${instance_name} (${evolutionApiName})`);
-    console.log(`   Tempo: ${duration}ms`);
-    console.log(`   HTTP Status: ${result.httpStatus || 'N/A'}`);
-    if (result.error) {
-      console.log(`   Erro: ${result.error} (${result.errorType || 'unknown'})`);
-    }
-    console.log(`   Novo total enviado hoje: ${instance.sent_today + (result.success ? 1 : 0)}\n`);
 
     return {
       success: result.success,
@@ -546,16 +525,16 @@ export class EvolutionBalancer {
               : null,
           });
       } else if (result.errorType === 'connection_closed') {
-        // Bloqueio: marca como blocked e desativa
-        newStatus = 'blocked';
-        updates.status = 'blocked';
+        // Conexão fechada: marca como disconnected e desativa
+        newStatus = 'disconnected';
+        updates.status = 'disconnected';
         updates.is_active = false;
 
         await supabaseServiceRole
           .from('evolution_instance_logs')
           .insert({
             evolution_instance_id: instance.id,
-            type: 'blocked',
+            type: 'disconnected',
             http_status: result.httpStatus || null,
             error_message: result.error || null,
             group_id: groupId || null,

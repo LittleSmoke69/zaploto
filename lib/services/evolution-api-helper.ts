@@ -88,32 +88,9 @@ export async function getUserEvolutionApi(userId: string): Promise<{
       };
     }
 
-    // Fallback para variáveis de ambiente (compatibilidade)
-    const envBase = process.env.EVOLUTION_BASE || process.env.NEXT_PUBLIC_EVOLUTION_BASE || '';
-    const envKey = process.env.EVOLUTION_APIKEY || process.env.NEXT_PUBLIC_EVOLUTION_APIKEY || '';
-
-    if (envBase && envKey) {
-      return {
-        baseUrl: envBase,
-        apiKey: envKey,
-      };
-    }
-
     return null;
   } catch (error) {
     console.error('Erro ao buscar API Evolution do usuário:', error);
-    
-    // Fallback para variáveis de ambiente em caso de erro
-    const envBase = process.env.EVOLUTION_BASE || process.env.NEXT_PUBLIC_EVOLUTION_BASE || '';
-    const envKey = process.env.EVOLUTION_APIKEY || process.env.NEXT_PUBLIC_EVOLUTION_APIKEY || '';
-
-    if (envBase && envKey) {
-      return {
-        baseUrl: envBase,
-        apiKey: envKey,
-      };
-    }
-
     return null;
   }
 }

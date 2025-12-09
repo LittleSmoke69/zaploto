@@ -117,13 +117,18 @@ export async function POST(req: NextRequest) {
       participants = Object.values(targetGroup.participants);
     }
 
-    // Função para normalizar telefone: adiciona 55 se não tiver, mantém se já tiver
+    // Função para normalizar telefone: adiciona 55 se não tiver, remove duplicação
     const normalizePhoneNumber = (phone: string): string => {
       // Remove caracteres não numéricos
-      const cleaned = phone.replace(/\D/g, '');
+      let cleaned = phone.replace(/\D/g, '');
       
-      // Se já começa com 55, retorna como está
-      if (cleaned.startsWith('55')) {
+      // Remove "55" duplicado no início (ex: "555599798679" -> "5599798679")
+      if (cleaned.startsWith('5555')) {
+        cleaned = cleaned.substring(2); // Remove os dois primeiros "55"
+      }
+      
+      // Se já começa com 55 (e não é duplicado), retorna como está
+      if (cleaned.startsWith('55') && !cleaned.startsWith('5555')) {
         return cleaned;
       }
       

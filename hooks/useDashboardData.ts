@@ -226,14 +226,15 @@ export const useDashboardData = () => {
         setContacts(formatted);
       }
 
-      // Usa instâncias buscadas via API
+      // Usa instâncias buscadas via API (sempre atualiza, mesmo se vazio)
+      setInstances(instancesData || []);
+      const connectedCount = (instancesData || []).filter((i: any) => i.status === 'connected').length;
+      setKpiConnected(connectedCount);
+      
       if (instancesData.length > 0) {
-        setInstances(instancesData);
-        setKpiConnected(instancesData.filter((i: any) => i.status === 'connected').length);
+        addLog(`Carregadas ${instancesData.length} instância(s), ${connectedCount} conectada(s)`, 'info');
       } else {
-        // Se não conseguiu buscar, mantém array vazio
-        setInstances([]);
-        setKpiConnected(0);
+        addLog('Nenhuma instância encontrada', 'info');
       }
 
       if (!campaignsResult.error && campaignsResult.data) {
@@ -261,40 +262,64 @@ export const useDashboardData = () => {
     }
   }, [userId, loadInitialData]);
 
-  // Polling para atualizar campanhas ativas a cada 5 segundos
+  // Polling otimizado para atualizar campanhas ativas em tempo real
   useEffect(() => {
     if (!userId) return;
 
-    // Verifica se há campanhas ativas antes de iniciar o polling
-    const checkActiveCampaigns = () => {
-      const activeCampaigns = campaigns.filter(
-        c => c.status === 'running' || c.status === 'paused'
-      );
-      return activeCampaigns.length > 0;
-    };
+    let interval: NodeJS.Timeout | null = null;
+    let timeout: NodeJS.Timeout | null = null;
 
-    // Se não houver campanhas ativas, não inicia o polling ainda
-    // Mas vamos iniciar mesmo assim para atualizar histórico periodicamente
-    const interval = setInterval(async () => {
+    const updateCampaigns = async () => {
       try {
-        // Busca TODAS as campanhas (não apenas ativas) para manter histórico
-        const { data, error } = await supabase
+        // Busca apenas campanhas ativas primeiro (mais leve)
+        const { data: activeData, error: activeError } = await supabase
           .from('campaigns')
           .select('*')
           .eq('user_id', userId)
+          .in('status', ['running', 'paused'])
           .order('created_at', { ascending: false });
 
-        if (!error && data) {
-          // Atualiza todas as campanhas, não apenas as ativas
-          setCampaigns(data as Campaign[]);
+        if (!activeError && activeData) {
+          // Atualiza apenas campanhas ativas no estado existente
+          setCampaigns((prevCampaigns) => {
+            const updatedMap = new Map(prevCampaigns.map(c => [c.id, c]));
+            activeData.forEach((campaign: Campaign) => {
+              updatedMap.set(campaign.id, campaign);
+            });
+            return Array.from(updatedMap.values()).sort(
+              (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+            );
+          });
+
+          // Se houver campanhas ativas, usa polling rápido (3s), senão lento (30s)
+          const hasActiveCampaigns = activeData.length > 0;
+          
+          if (interval) {
+            clearInterval(interval);
+          }
+
+          if (hasActiveCampaigns) {
+            // Polling rápido quando há campanhas ativas
+            interval = setInterval(updateCampaigns, 3000);
+          } else {
+            // Polling lento quando não há campanhas ativas (apenas para atualizar histórico)
+            interval = setInterval(updateCampaigns, 30000);
+          }
         }
       } catch (error) {
         console.error('Erro ao atualizar campanhas:', error);
       }
-    }, 5000); // Atualiza a cada 5 segundos
+    };
 
-    return () => clearInterval(interval);
-  }, [userId]); // Remove campaigns das dependências para evitar loops
+    // Inicia atualização imediatamente
+    updateCampaigns();
+
+    // Limpa intervalos ao desmontar
+    return () => {
+      if (interval) clearInterval(interval);
+      if (timeout) clearTimeout(timeout);
+    };
+  }, [userId]);
 
   return {
     userId,
