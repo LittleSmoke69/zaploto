@@ -333,24 +333,32 @@ export class EvolutionService {
         // 400: Bad request - pode ser número inválido ou erro na requisição
         const errorMsg = responseData?.message || responseText || 'Bad request';
         
-        // Verifica se é Connection Closed (número banido/desconectado)
-        const isConnectionClosed = 
-          errorMsg.toLowerCase().includes('connection closed') || 
-          responseText.toLowerCase().includes('connection closed') ||
-          errorMsg.toLowerCase().includes('disconnected') ||
-          responseText.toLowerCase().includes('disconnected');
+        // IMPORTANTE: Detecção mais precisa de "connection closed" baseada no código antigo
+        // Só marca como connection_closed se for realmente connection closed, não outros erros 400
+        const parseIsConnectionClosed = (status: number, text: string, data: any): boolean => {
+          if (status !== 400) return false;
+          
+          try {
+            // Tenta extrair mensagem de diferentes formatos de resposta
+            const msgs = data?.response?.message || data?.message || text;
+            const flat = Array.isArray(msgs) ? msgs.join(' ').toLowerCase() : String(msgs || '').toLowerCase();
+            
+            // Só retorna true se explicitamente mencionar "connection closed"
+            // Não marca como disconnected em outros casos
+            return flat.includes('connection closed');
+          } catch {
+            // Fallback: verifica no texto bruto
+            return text.toLowerCase().includes('connection closed');
+          }
+        };
+
+        const isConnectionClosed = parseIsConnectionClosed(response.status, responseText, responseData);
 
         if (isConnectionClosed) {
-          console.error(`❌ [Evolution API] Connection Closed - Número banido/desconectado:`, {
-            instanceName,
-            groupId,
-            participants,
-            errorMsg,
-            responseData,
-          });
+          console.warn(`⚠️ [Evolution API] Connection Closed detectado - Status 400 com mensagem "connection closed"`);
           return {
             success: false,
-            error: 'Número desconectado ou banido (Connection Closed)',
+            error: 'Connection Closed - número pode estar banido ou desconectado',
             errorType: 'connection_closed',
             added: 0,
             httpStatus: 400,
@@ -358,13 +366,8 @@ export class EvolutionService {
           };
         }
 
-        console.error(`❌ [Evolution API] Bad Request (400):`, {
-          instanceName,
-          groupId,
-          participants,
-          errorMsg,
-          responseData,
-        });
+        // Outros erros 400 não são connection closed
+        console.log(`⚠️ [Evolution API] Bad Request (400) mas NÃO é connection closed: ${errorMsg}`);
         return {
           success: false,
           error: errorMsg,
@@ -421,32 +424,20 @@ export class EvolutionService {
         timestamp: new Date().toISOString(),
       };
 
-      // Verifica se é erro de timeout
+      // IMPORTANTE: Timeout NÃO é connection closed - é apenas um problema temporário de rede
+      // Não deve marcar a instância como desconectada
       const isTimeout = 
         error?.message?.toLowerCase().includes('timeout') ||
         error?.name === 'AbortError' ||
         error?.message?.toLowerCase().includes('excedeu');
-      
-      // Erro de conexão (Connection Closed, ECONNRESET, etc)
-      const isConnectionError = 
-        error?.message?.toLowerCase().includes('connection closed') ||
-        error?.message?.toLowerCase().includes('econnreset') ||
-        error?.message?.toLowerCase().includes('socket hang up') ||
-        error?.message?.toLowerCase().includes('econnrefused') ||
-        error?.message?.toLowerCase().includes('tls connection') ||
-        error?.message?.toLowerCase().includes('network socket disconnected') ||
-        error?.code === 'ECONNRESET' ||
-        error?.code === 'ECONNREFUSED' ||
-        error?.code === 'ETIMEDOUT' ||
-        error?.cause?.code === 'ECONNRESET' ||
-        error?.cause?.code === 'ECONNREFUSED';
 
       if (isTimeout) {
-        console.error(`⏱️ [Evolution API] Timeout na requisição:`, errorDetails);
+        console.error(`⏱️ [Evolution API] Timeout na requisição após ${duration}ms`);
+        console.log(`⚠️ [Evolution API] Timeout é um erro temporário, NÃO marca instância como desconectada`);
         return {
           success: false,
           error: `Timeout: requisição excedeu o tempo limite (${duration}ms)`,
-          errorType: 'connection_closed',
+          errorType: 'unknown', // Timeout não é connection_closed
           added: 0,
           httpStatus: 0,
           responseData: { 
@@ -458,12 +449,46 @@ export class EvolutionService {
         };
       }
 
-      if (isConnectionError) {
-        console.error(`❌ [Evolution API] Erro de conexão (Connection Closed):`, errorDetails);
+      // Verifica se é connection closed REAL (não erro temporário de rede)
+      const isRealConnectionClosed = 
+        error?.message?.toLowerCase().includes('connection closed') &&
+        !error?.message?.toLowerCase().includes('timeout') &&
+        !error?.message?.toLowerCase().includes('excedeu');
+
+      // Erros de rede temporários (ECONNRESET, ECONNREFUSED) são tratados como 'unknown'
+      // Não marcam a instância como desconectada, pois podem ser problemas temporários
+      const isTemporaryNetworkError = 
+        error?.code === 'ECONNRESET' ||
+        error?.code === 'ECONNREFUSED' ||
+        error?.code === 'ETIMEDOUT' ||
+        error?.cause?.code === 'ECONNRESET' ||
+        error?.cause?.code === 'ECONNREFUSED' ||
+        error?.message?.toLowerCase().includes('econnreset') ||
+        error?.message?.toLowerCase().includes('econnrefused') ||
+        error?.message?.toLowerCase().includes('socket hang up');
+
+      if (isRealConnectionClosed) {
+        console.error(`🔌 [Evolution API] Connection Closed REAL detectado:`, errorDetails);
         return {
           success: false,
-          error: 'Erro de conexão com a Evolution API - verifique se o servidor está acessível',
+          error: 'Connection Closed - número pode estar banido ou desconectado',
           errorType: 'connection_closed',
+          added: 0,
+          httpStatus: 0,
+          responseData: { 
+            error: error?.message, 
+            code: error?.code,
+            duration 
+          },
+        };
+      }
+
+      if (isTemporaryNetworkError) {
+        console.warn(`⚠️ [Evolution API] Erro de rede temporário (NÃO marca como desconectado):`, errorDetails);
+        return {
+          success: false,
+          error: 'Erro temporário de conexão - tente novamente',
+          errorType: 'unknown', // Erro temporário, não marca como desconectado
           added: 0,
           httpStatus: 0,
           responseData: { 
@@ -471,7 +496,8 @@ export class EvolutionService {
             code: error?.code || error?.cause?.code,
             host: error?.cause?.host,
             port: error?.cause?.port,
-            duration 
+            duration,
+            type: 'temporary_network_error'
           },
         };
       }

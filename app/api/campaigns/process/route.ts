@@ -116,12 +116,18 @@ export async function POST(req: NextRequest) {
       .eq('id', campaignId);
     console.log(`✅ [CAMPANHA ${campaignId}] Status atualizado para 'running'. Processamento iniciando...`);
 
+    // IMPORTANTE: Na Netlify, precisamos garantir que o processamento inicie IMEDIATAMENTE
+    // Inicia o processamento ANTES de retornar a resposta para garantir que comece a executar
+    console.log(`🚀 [CAMPANHA ${campaignId}] Iniciando processamento IMEDIATAMENTE antes de retornar resposta...`);
+    
     // Processa a campanha de forma assíncrona (não bloqueia a resposta)
     // IMPORTANTE: Na Netlify, precisamos garantir que a função continue executando
     // mesmo após retornar a resposta HTTP. Usamos .then() para garantir que a promise
     // não seja descartada quando a função retornar.
     const processPromise = processCampaignAsync(campaignId, campaign, jobs, userId);
     
+    // Garante que o processamento comece imediatamente
+    // Aguarda um pequeno delay para garantir que o primeiro job seja iniciado
     processPromise.catch((err) => {
       console.error('❌ [CAMPANHA] Erro fatal ao processar campanha assíncrona:', err);
       console.error('❌ [CAMPANHA] Stack trace:', err?.stack);
@@ -133,6 +139,10 @@ export async function POST(req: NextRequest) {
     }).catch(() => {
       // Já tratado acima
     });
+
+    // IMPORTANTE: Aguarda um pequeno delay para garantir que o processamento comece
+    // antes de retornar a resposta (especialmente importante na Netlify)
+    await new Promise(resolve => setTimeout(resolve, 100));
 
     console.log(`✅ [CAMPANHA ${campaignId}] Campanha iniciada com sucesso! Total de jobs: ${jobs.length}. Sistema suporta múltiplas campanhas simultâneas.`);
     
@@ -306,36 +316,39 @@ async function processCampaignAsync(
       break;
     }
 
-      try {
-        // Normaliza o número de telefone (adiciona 55 se não tiver)
-        const originalPhone = job.phone;
-        const normalizedPhone = normalizePhoneNumber(job.phone);
-        
-        console.log(`📞 [CAMPANHA ${campaignId}] Job ${jobNumber}/${totalJobs}: Telefone original: ${originalPhone} | Normalizado: ${normalizedPhone}`);
-        console.log(`📞 [CAMPANHA ${campaignId}] Job ${jobNumber}/${totalJobs}: Adicionando ${normalizedPhone} ao grupo ${groupId}`);
-        console.log(`🔄 [CAMPANHA ${campaignId}] Job ${jobNumber}: Chamando evolutionBalancer.addLeadToGroup para telefone ${normalizedPhone}...`);
-        console.log(`🔄 [CAMPANHA ${campaignId}] Job ${jobNumber}: Parâmetros - userId: ${userId}, groupId: ${groupId}, leadPhone: ${normalizedPhone}, preferUserBinding: ${preferUserBinding}`);
-        
+      // Lógica de retry baseada no código antigo
+      const originalPhone = job.phone;
+      const normalizedPhone = normalizePhoneNumber(job.phone);
+      let attempts = 0;
+      const maxAttempts = 3;
+      let success = false;
+      
+      console.log(`📞 [CAMPANHA ${campaignId}] Job ${jobNumber}/${totalJobs}: Telefone original: ${originalPhone} | Normalizado: ${normalizedPhone}`);
+      console.log(`📞 [CAMPANHA ${campaignId}] Job ${jobNumber}/${totalJobs}: Adicionando ${normalizedPhone} ao grupo ${groupId}`);
+      
+      while (attempts < maxAttempts && !success) {
+        attempts++;
         const addStartTime = Date.now();
         
         try {
+          console.log(`🔄 [CAMPANHA ${campaignId}] Job ${jobNumber}: Tentativa ${attempts}/${maxAttempts} - Chamando evolutionBalancer.addLeadToGroup para telefone ${normalizedPhone}...`);
+          
           // Usa o balanceador automático para adicionar lead ao grupo
           // O balanceador distribui automaticamente entre todas as Evolution APIs ativas
-          console.log(`🔄 [CAMPANHA ${campaignId}] Job ${jobNumber}: Iniciando await evolutionBalancer.addLeadToGroup...`);
           const result = await evolutionBalancer.addLeadToGroup({
             userId, // Opcional - usado apenas se preferUserBinding=true
             groupId,
             leadPhone: normalizedPhone,
             preferUserBinding, // Se false, distribui entre todas as APIs
           });
-          console.log(`✅ [CAMPANHA ${campaignId}] Job ${jobNumber}: evolutionBalancer.addLeadToGroup retornou com sucesso`);
         
           const addDuration = Date.now() - addStartTime;
-          console.log(`⏱️ [CAMPANHA ${campaignId}] Job ${jobNumber}: addLeadToGroup concluído em ${addDuration}ms`);
+          console.log(`⏱️ [CAMPANHA ${campaignId}] Job ${jobNumber}: addLeadToGroup concluído em ${addDuration}ms (tentativa ${attempts}/${maxAttempts})`);
           console.log(`📊 [CAMPANHA ${campaignId}] Job ${jobNumber}: Resultado - ${result.success ? 'SUCESSO' : 'FALHA'} ${result.error ? `(${result.error})` : ''}`);
           console.log(`📊 [CAMPANHA ${campaignId}] Job ${jobNumber}: Detalhes - errorType: ${result.errorType || 'N/A'}, httpStatus: ${result.httpStatus || 'N/A'}`);
 
           if (result.success) {
+            success = true;
             processed++;
             console.log(`✅ [CAMPANHA ${campaignId}] Job ${jobNumber}: Telefone ${normalizedPhone} adicionado com SUCESSO! Processados: ${processed}`);
             await rateLimitService.recordLeadUsage(campaignId, 1, true);
@@ -356,9 +369,23 @@ async function processCampaignAsync(
               console.log(`✅ [CAMPANHA ${campaignId}] Job ${jobNumber}: Contato ${job.contactId} (telefone ${normalizedPhone}) atualizado no banco`);
             }
           } else {
-            failed++;
-            console.log(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: Telefone ${normalizedPhone} FALHOU! Erro: ${result.error || 'Desconhecido'}. Falhas: ${failed}`);
-            await rateLimitService.recordLeadUsage(campaignId, 1, false);
+            // Verifica se é rate limit e deve fazer retry
+            const isRateLimit = result.errorType === 'rate_limit' || 
+                               result.httpStatus === 429 ||
+                               (result.error || '').toLowerCase().includes('rate') ||
+                               (result.error || '').toLowerCase().includes('too many') ||
+                               (result.error || '').toLowerCase().includes('limit');
+            
+            if (isRateLimit && attempts < maxAttempts) {
+              // Calcula delay com backoff baseado no código antigo
+              const baseDelay = delayMs || 2000;
+              const jitter = 1000 + Math.random() * 2000;
+              const waitMs = baseDelay + jitter;
+              
+              console.log(`⚠️ [CAMPANHA ${campaignId}] Job ${jobNumber}: Rate-limit detectado. Backoff ${(waitMs / 1000).toFixed(1)}s (tentativa ${attempts}/${maxAttempts})`);
+              await new Promise(resolve => setTimeout(resolve, waitMs));
+              continue; // Tenta novamente
+            }
 
             // Se não há instâncias disponíveis, marca todos os restantes como erro
             if (result.errorType === 'no_instance_available') {
@@ -379,19 +406,44 @@ async function processCampaignAsync(
               break;
             }
 
-            // Se erro for connection_closed, atualiza status da instância para disconnected
+            // IMPORTANTE: Connection closed NÃO deve fazer retry - marca como falha
+            // Mas só marca instância como desconectada se for realmente connection closed confirmado
             if (result.errorType === 'connection_closed' && result.instanceUsed) {
+              const isRealConnectionClosed = result.error?.toLowerCase().includes('connection closed') ||
+                                           (result.httpStatus === 400 && result.error?.toLowerCase().includes('connection closed'));
+              
+              if (isRealConnectionClosed) {
+                console.warn(`⚠️ [CAMPANHA ${campaignId}] Instância ${result.instanceUsed.instance_name} marcada como desconectada - Connection Closed confirmado`);
+                // O balanceador já atualiza o status, apenas logamos aqui
+              } else {
+                console.log(`⚠️ [CAMPANHA ${campaignId}] Erro marcado como connection_closed mas não confirma - NÃO marca instância como desconectada`);
+              }
+              
+              // Connection closed não faz retry - marca como falha
+              failed++;
+              await rateLimitService.recordLeadUsage(campaignId, 1, false);
               await supabaseServiceRole
-                .from('evolution_instances')
+                .from('searches')
                 .update({
-                  status: 'disconnected',
-                  is_active: false,
+                  status: 'erro',
                   updated_at: new Date().toISOString(),
                 })
-                .eq('id', result.instanceUsed.id);
-              
-              console.warn(`⚠️ [CAMPANHA ${campaignId}] Instância ${result.instanceUsed.instance_name} marcada como desconectada devido a connection_closed`);
+                .eq('id', job.contactId);
+              break; // Não tenta novamente para connection closed
             }
+
+            // Outros erros: se não for última tentativa, faz retry com delay
+            if (attempts < maxAttempts) {
+              const waitMs = Math.max(delayMs || 2000, 2000);
+              console.log(`⚠️ [CAMPANHA ${campaignId}] Job ${jobNumber}: Erro detectado. Retentando em ${(waitMs / 1000).toFixed(1)}s (tentativa ${attempts}/${maxAttempts})`);
+              await new Promise(resolve => setTimeout(resolve, waitMs));
+              continue; // Tenta novamente
+            }
+
+            // Última tentativa falhou
+            failed++;
+            console.log(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: Telefone ${normalizedPhone} FALHOU após ${maxAttempts} tentativas! Erro: ${result.error || 'Desconhecido'}. Falhas: ${failed}`);
+            await rateLimitService.recordLeadUsage(campaignId, 1, false);
 
             // Marca como 'erro' quando falha
             await supabaseServiceRole
@@ -403,35 +455,30 @@ async function processCampaignAsync(
               .eq('id', job.contactId);
           }
         } catch (addError: any) {
-          console.error(`❌ [CAMPANHA ${campaignId}] Erro ao chamar addLeadToGroup no job ${jobNumber}:`, addError);
-          console.error(`❌ [CAMPANHA ${campaignId}] Stack trace do addLeadToGroup:`, addError?.stack);
-          // Re-lança o erro para ser tratado no catch externo
-          throw addError;
-        }
-      } catch (error: any) {
-        failed++;
-        const errorPhone = normalizePhoneNumber(job.phone);
-        console.error(`❌ [CAMPANHA ${campaignId}] Erro ao processar job ${jobNumber} (telefone ${errorPhone}):`, error);
-        console.error(`❌ [CAMPANHA ${campaignId}] Stack trace:`, error?.stack);
-        console.error(`❌ [CAMPANHA ${campaignId}] Erro detalhado:`, {
-          message: error?.message,
-          name: error?.name,
-          code: error?.code,
-          telefone: errorPhone,
-        });
-        await rateLimitService.recordLeadUsage(campaignId, 1, false);
-        
-        // Marca como 'erro' em caso de exceção
-        const { error: updateError } = await supabaseServiceRole
-          .from('searches')
-          .update({
-            status: 'erro',
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', job.contactId);
-        
-        if (updateError) {
-          console.error(`❌ [CAMPANHA ${campaignId}] Erro ao atualizar contato ${job.contactId} (telefone ${errorPhone}) como erro:`, updateError);
+          console.error(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: Exceção ao chamar addLeadToGroup (tentativa ${attempts}/${maxAttempts}):`, addError);
+          console.error(`❌ [CAMPANHA ${campaignId}] Stack trace:`, addError?.stack);
+          
+          // Se não for última tentativa, faz retry
+          if (attempts < maxAttempts) {
+            const waitMs = Math.max(delayMs || 2000, 2000);
+            console.log(`⚠️ [CAMPANHA ${campaignId}] Job ${jobNumber}: Exceção. Retentando em ${(waitMs / 1000).toFixed(1)}s (tentativa ${attempts}/${maxAttempts})`);
+            await new Promise(resolve => setTimeout(resolve, waitMs));
+            continue; // Tenta novamente
+          }
+          
+          // Última tentativa falhou
+          failed++;
+          console.error(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: Erro final após ${maxAttempts} tentativas:`, addError);
+          await rateLimitService.recordLeadUsage(campaignId, 1, false);
+          
+          // Marca como 'erro' em caso de exceção
+          await supabaseServiceRole
+            .from('searches')
+            .update({
+              status: 'erro',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', job.contactId);
         }
       }
 

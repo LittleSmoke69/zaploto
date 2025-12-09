@@ -465,16 +465,33 @@ export class EvolutionBalancer {
 
       if (response.status === 400) {
         const errorMsg = responseData?.message || responseText || 'Bad request';
-        const isConnectionClosed = 
-          errorMsg.toLowerCase().includes('connection closed') || 
-          responseText.toLowerCase().includes('connection closed') ||
-          errorMsg.toLowerCase().includes('disconnected') ||
-          responseText.toLowerCase().includes('disconnected');
+        
+        // IMPORTANTE: Detecção mais precisa de "connection closed" baseada no código antigo
+        // Só marca como connection_closed se for realmente connection closed, não outros erros 400
+        const parseIsConnectionClosed = (status: number, text: string, data: any): boolean => {
+          if (status !== 400) return false;
+          
+          try {
+            // Tenta extrair mensagem de diferentes formatos de resposta
+            const msgs = data?.response?.message || data?.message || text;
+            const flat = Array.isArray(msgs) ? msgs.join(' ').toLowerCase() : String(msgs || '').toLowerCase();
+            
+            // Só retorna true se explicitamente mencionar "connection closed"
+            // Não marca como disconnected em outros casos
+            return flat.includes('connection closed');
+          } catch {
+            // Fallback: verifica no texto bruto
+            return text.toLowerCase().includes('connection closed');
+          }
+        };
+
+        const isConnectionClosed = parseIsConnectionClosed(response.status, responseText, responseData);
 
         if (isConnectionClosed) {
+          console.warn(`⚠️ [BALANCEADOR] Connection Closed detectado - Status 400 com mensagem "connection closed"`);
           return {
             success: false,
-            error: 'Número desconectado ou banido (Connection Closed)',
+            error: 'Connection Closed - número pode estar banido ou desconectado',
             errorType: 'connection_closed',
             added: 0,
             httpStatus: 400,
@@ -482,6 +499,8 @@ export class EvolutionBalancer {
           };
         }
 
+        // Outros erros 400 não são connection closed
+        console.log(`⚠️ [BALANCEADOR] Bad Request (400) mas NÃO é connection closed: ${errorMsg}`);
         return {
           success: false,
           error: errorMsg,
@@ -528,26 +547,15 @@ export class EvolutionBalancer {
         error?.name === 'AbortError' ||
         error?.message?.toLowerCase().includes('excedeu');
       
-      // Verifica se é erro de conexão (ECONNRESET, ECONNREFUSED, etc)
-      const isConnectionError = 
-        error?.message?.toLowerCase().includes('connection closed') ||
-        error?.message?.toLowerCase().includes('econnreset') ||
-        error?.message?.toLowerCase().includes('socket hang up') ||
-        error?.message?.toLowerCase().includes('econnrefused') ||
-        error?.message?.toLowerCase().includes('tls connection') ||
-        error?.message?.toLowerCase().includes('network socket disconnected') ||
-        error?.code === 'ECONNRESET' ||
-        error?.code === 'ECONNREFUSED' ||
-        error?.code === 'ETIMEDOUT' ||
-        error?.cause?.code === 'ECONNRESET' ||
-        error?.cause?.code === 'ECONNREFUSED';
-
+      // IMPORTANTE: Timeout NÃO é connection closed - é apenas um problema temporário de rede
+      // Não deve marcar a instância como desconectada
       if (isTimeout) {
-        console.error(`⏱️ [BALANCEADOR] Timeout na requisição para ${url}`);
+        console.error(`⏱️ [BALANCEADOR] Timeout na requisição para ${finalUrl} após ${errorDuration}ms`);
+        console.log(`⚠️ [BALANCEADOR] Timeout é um erro temporário, NÃO marca instância como desconectada`);
         return {
           success: false,
           error: `Timeout: requisição excedeu o tempo limite (${errorDuration}ms)`,
-          errorType: 'connection_closed', // Trata timeout como erro de conexão
+          errorType: 'unknown', // Timeout não é connection_closed
           added: 0,
           httpStatus: 0,
           responseData: { 
@@ -559,17 +567,56 @@ export class EvolutionBalancer {
         };
       }
 
-      if (isConnectionError) {
-        console.error(`🔌 [BALANCEADOR] Erro de conexão detectado:`, {
+      // Verifica se é erro de conexão REAL (ECONNRESET, ECONNREFUSED)
+      // IMPORTANTE: Erros de rede temporários NÃO devem marcar como connection_closed
+      // Só marca se for explicitamente "connection closed" na mensagem
+      const isRealConnectionClosed = 
+        error?.message?.toLowerCase().includes('connection closed') &&
+        !error?.message?.toLowerCase().includes('timeout') &&
+        !error?.message?.toLowerCase().includes('excedeu');
+
+      // Erros de rede temporários (ECONNRESET, ECONNREFUSED) são tratados como 'unknown'
+      // Não marcam a instância como desconectada, pois podem ser problemas temporários
+      const isTemporaryNetworkError = 
+        error?.code === 'ECONNRESET' ||
+        error?.code === 'ECONNREFUSED' ||
+        error?.code === 'ETIMEDOUT' ||
+        error?.cause?.code === 'ECONNRESET' ||
+        error?.cause?.code === 'ECONNREFUSED' ||
+        error?.message?.toLowerCase().includes('econnreset') ||
+        error?.message?.toLowerCase().includes('econnrefused') ||
+        error?.message?.toLowerCase().includes('socket hang up');
+
+      if (isRealConnectionClosed) {
+        console.error(`🔌 [BALANCEADOR] Connection Closed REAL detectado:`, {
+          message: error?.message,
+          code: error?.code,
+        });
+        return {
+          success: false,
+          error: 'Connection Closed - número pode estar banido ou desconectado',
+          errorType: 'connection_closed',
+          added: 0,
+          httpStatus: 0,
+          responseData: { 
+            error: error?.message, 
+            code: error?.code,
+            duration: errorDuration 
+          },
+        };
+      }
+
+      if (isTemporaryNetworkError) {
+        console.warn(`⚠️ [BALANCEADOR] Erro de rede temporário detectado (NÃO marca como desconectado):`, {
           code: error?.code || error?.cause?.code,
           message: error?.message,
-          host: error?.cause?.host || new URL(url).hostname,
+          host: error?.cause?.host || new URL(finalUrl).hostname,
           port: error?.cause?.port,
         });
         return {
           success: false,
-          error: 'Erro de conexão com a Evolution API - verifique se o servidor está acessível',
-          errorType: 'connection_closed',
+          error: 'Erro temporário de conexão - tente novamente',
+          errorType: 'unknown', // Erro temporário, não marca como desconectado
           added: 0,
           httpStatus: 0,
           responseData: { 
@@ -577,7 +624,8 @@ export class EvolutionBalancer {
             code: error?.code || error?.cause?.code,
             host: error?.cause?.host,
             port: error?.cause?.port,
-            duration: errorDuration 
+            duration: errorDuration,
+            type: 'temporary_network_error'
           },
         };
       }
@@ -668,24 +716,51 @@ export class EvolutionBalancer {
               : null,
           });
       } else if (result.errorType === 'connection_closed') {
-        // Conexão fechada: marca como disconnected e desativa
-        newStatus = 'disconnected';
-        updates.status = 'disconnected';
-        updates.is_active = false;
+        // IMPORTANTE: Só marca como disconnected se for realmente connection closed
+        // Verifica se a resposta confirma que é connection closed
+        const responseData = result.responseData || {};
+        const errorMsg = (responseData.message || result.error || '').toLowerCase();
+        
+        // Só marca como desconectado se explicitamente mencionar "connection closed"
+        // Não marca em erros temporários ou outros problemas
+        if (errorMsg.includes('connection closed') || 
+            (result.httpStatus === 400 && errorMsg.includes('connection closed'))) {
+          console.warn(`⚠️ [BALANCEADOR] Marcando instância ${instance.instance_name} como desconectada - Connection Closed confirmado`);
+          newStatus = 'disconnected';
+          updates.status = 'disconnected';
+          updates.is_active = false;
 
-        await supabaseServiceRole
-          .from('evolution_instance_logs')
-          .insert({
-            evolution_instance_id: instance.id,
-            type: 'disconnected',
-            http_status: result.httpStatus || null,
-            error_message: result.error || null,
-            group_id: groupId || null,
-            lead_phone: leadPhone || null,
-            raw_response_snippet: result.responseData 
-              ? JSON.stringify(result.responseData).substring(0, 500) 
-              : null,
-          });
+          await supabaseServiceRole
+            .from('evolution_instance_logs')
+            .insert({
+              evolution_instance_id: instance.id,
+              type: 'disconnected',
+              http_status: result.httpStatus || null,
+              error_message: result.error || null,
+              group_id: groupId || null,
+              lead_phone: leadPhone || null,
+              raw_response_snippet: result.responseData 
+                ? JSON.stringify(result.responseData).substring(0, 500) 
+                : null,
+            });
+        } else {
+          // Se não for connection closed confirmado, trata como erro genérico
+          console.log(`⚠️ [BALANCEADOR] Erro marcado como connection_closed mas não confirma - tratando como erro genérico`);
+          await supabaseServiceRole
+            .from('evolution_instance_logs')
+            .insert({
+              evolution_instance_id: instance.id,
+              type: 'error',
+              http_status: result.httpStatus || null,
+              error_message: result.error || null,
+              error_code: 'connection_closed_unconfirmed',
+              group_id: groupId || null,
+              lead_phone: leadPhone || null,
+              raw_response_snippet: result.responseData 
+                ? JSON.stringify(result.responseData).substring(0, 500) 
+                : null,
+            });
+        }
       } else {
         // Outro erro
         await supabaseServiceRole
