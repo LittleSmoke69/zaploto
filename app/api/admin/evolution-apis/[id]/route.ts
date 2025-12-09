@@ -37,10 +37,18 @@ export async function PATCH(
       // Valida URL
       try {
         new URL(base_url);
-        updateData.base_url = base_url.endsWith('/') ? base_url : `${base_url}/`;
       } catch {
         return errorResponse('base_url deve ser uma URL válida', 400);
       }
+      
+      // Normaliza a base_url: remove barra final e espaços
+      // A barra será adicionada automaticamente ao construir URLs completas
+      let normalizedBaseUrl = base_url.trim();
+      normalizedBaseUrl = normalizedBaseUrl.replace(/\/+$/, ''); // Remove barras finais
+      normalizedBaseUrl = normalizedBaseUrl.replace(/([^:]\/)\/+/g, '$1'); // Remove barras duplas no meio
+      
+      console.log(`🔧 [ADMIN] Normalizando base_url na atualização: "${base_url}" -> "${normalizedBaseUrl}"`);
+      updateData.base_url = normalizedBaseUrl; // Salva sem barra final
     }
     if (api_key !== undefined) updateData.api_key = api_key;
     if (description !== undefined) updateData.description = description;

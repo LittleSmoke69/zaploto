@@ -20,7 +20,7 @@ const ActiveCampaigns: React.FC<ActiveCampaignsProps> = ({
   const [showHistory, setShowHistory] = useState(false);
 
   const activeCampaigns = campaigns.filter(
-    c => c.status === 'running' || c.status === 'paused'
+    c => c.status === 'running' || c.status === 'paused' || c.status === 'pending'
   );
 
   const completedCampaigns = campaigns.filter(
@@ -43,11 +43,12 @@ const ActiveCampaigns: React.FC<ActiveCampaignsProps> = ({
     const isPaused = campaign.status === 'paused';
     const isCompleted = campaign.status === 'completed';
     const isFailed = campaign.status === 'failed';
+    const isPending = campaign.status === 'pending';
 
     return (
       <div
         key={campaign.id}
-        className={`p-4 border-2 rounded-lg transition ${
+        className={`p-4 border-2 rounded-lg transition relative ${
           isFailed
             ? 'border-red-200 bg-red-50/50'
             : isCompleted
@@ -55,6 +56,15 @@ const ActiveCampaigns: React.FC<ActiveCampaignsProps> = ({
             : 'border-gray-200 hover:border-emerald-300 bg-white'
         }`}
       >
+        {/* Overlay de loading para campanhas pendentes */}
+        {isPending && (
+          <div className="absolute inset-0 bg-emerald-500/20 backdrop-blur-sm rounded-lg flex items-center justify-center z-10">
+            <div className="flex flex-col items-center gap-3">
+              <div className="w-12 h-12 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin"></div>
+              <p className="text-sm font-medium text-emerald-700">Iniciando campanha...</p>
+            </div>
+          </div>
+        )}
         <div className="flex justify-between items-start mb-3">
           <div className="flex-1">
             <div className="flex items-center gap-2 mb-2">
@@ -63,7 +73,9 @@ const ActiveCampaigns: React.FC<ActiveCampaignsProps> = ({
               </h3>
               <span
                 className={`px-2 py-1 rounded text-xs font-medium ${
-                  isPaused
+                  isPending
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : isPaused
                     ? 'bg-yellow-100 text-yellow-700'
                     : isFailed
                     ? 'bg-red-100 text-red-700'
@@ -72,7 +84,7 @@ const ActiveCampaigns: React.FC<ActiveCampaignsProps> = ({
                     : 'bg-blue-100 text-blue-700'
                 }`}
               >
-                {isPaused ? 'Pausada' : isCompleted ? 'Concluída' : isFailed ? 'Falhou' : 'Em Execução'}
+                {isPending ? 'Iniciando...' : isPaused ? 'Pausada' : isCompleted ? 'Concluída' : isFailed ? 'Falhou' : 'Em Execução'}
               </span>
             </div>
             <p className="text-xs text-gray-500 font-mono mb-2">{campaign.id}</p>

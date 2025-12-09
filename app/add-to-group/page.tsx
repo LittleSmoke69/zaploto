@@ -184,8 +184,18 @@ const AddToGroupPage = () => {
       const data = await resp.json().catch(() => ({} as any));
 
       if (!resp.ok) {
-        throw new Error(data?.error || data?.message || 'Erro ao iniciar campanha');
+        const errorMsg = data?.error || data?.message || 'Erro ao iniciar campanha';
+        console.error('Erro ao iniciar campanha:', errorMsg, data);
+        throw new Error(errorMsg);
       }
+      
+      // Log para debug - verifica se a campanha foi iniciada corretamente
+      console.log('Campanha iniciada com sucesso:', {
+        campaignId: campaign.id,
+        totalJobs: jobs.length,
+        status: data.data?.status,
+        message: data.message
+      });
 
       showToast(`Campanha iniciada! Processando ${contactsToUse.length} contato(s)...`, 'success');
       addLog(`Campanha ${campaign.id} iniciada com sucesso!`, 'success');

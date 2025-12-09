@@ -55,7 +55,11 @@ export class EvolutionService {
    * @param baseUrl URL base da Evolution API (obtida do banco de dados)
    */
   async getConnectionState(instanceName: string, apiKey: string, baseUrl: string): Promise<any> {
-    const response = await fetch(`${baseUrl}/instance/connectionState/${instanceName}`, {
+    const normalizedBaseUrl = this.normalizeBaseUrl(baseUrl);
+    const url = `${normalizedBaseUrl}/instance/connectionState/${instanceName}`;
+    const finalUrl = url.replace(/([^:]\/)\/+/g, '$1');
+    
+    const response = await fetch(finalUrl, {
       method: 'GET',
       headers: {
         apikey: apiKey,
@@ -75,7 +79,11 @@ export class EvolutionService {
    * @param baseUrl URL base da Evolution API (obtida do banco de dados)
    */
   async connectInstance(instanceName: string, apiKey: string, baseUrl: string): Promise<any> {
-    const response = await fetch(`${baseUrl}/instance/connect/${instanceName}`, {
+    const normalizedBaseUrl = this.normalizeBaseUrl(baseUrl);
+    const url = `${normalizedBaseUrl}/instance/connect/${instanceName}`;
+    const finalUrl = url.replace(/([^:]\/)\/+/g, '$1');
+    
+    const response = await fetch(finalUrl, {
       method: 'GET',
       headers: {
         apikey: apiKey,
@@ -95,7 +103,11 @@ export class EvolutionService {
    * @param baseUrl URL base da Evolution API (obtida do banco de dados)
    */
   async deleteInstance(instanceName: string, apiKey: string, baseUrl: string): Promise<void> {
-    const response = await fetch(`${baseUrl}/instance/delete/${instanceName}`, {
+    const normalizedBaseUrl = this.normalizeBaseUrl(baseUrl);
+    const url = `${normalizedBaseUrl}/instance/delete/${instanceName}`;
+    const finalUrl = url.replace(/([^:]\/)\/+/g, '$1');
+    
+    const response = await fetch(finalUrl, {
       method: 'DELETE',
       headers: {
         apikey: apiKey,
@@ -113,9 +125,14 @@ export class EvolutionService {
    * @param baseUrl URL base da Evolution API (obtida do banco de dados)
    */
   async fetchAllGroups(instanceName: string, apiKey: string, baseUrl: string, getParticipants: boolean = true): Promise<EvolutionGroup[]> {
-    const url = `${baseUrl}/group/fetchAllGroups/${instanceName}?getParticipants=${getParticipants}`;
+    // Normaliza a base_url para garantir formato correto
+    const normalizedBaseUrl = this.normalizeBaseUrl(baseUrl);
+    const url = `${normalizedBaseUrl}/group/fetchAllGroups/${instanceName}?getParticipants=${getParticipants}`;
     
-    const response = await fetch(url, {
+    // Validação final: remove qualquer barra dupla que possa ter sobrado
+    const finalUrl = url.replace(/([^:]\/)\/+/g, '$1');
+    
+    const response = await fetch(finalUrl, {
       method: 'GET',
       headers: {
         apikey: apiKey,
@@ -169,6 +186,26 @@ export class EvolutionService {
    * groupId é passado como parâmetro na URL
    * @param baseUrl URL base da Evolution API (obtida do banco de dados)
    */
+  /**
+   * Normaliza a URL base removendo barras duplas e garantindo formato correto
+   * IMPORTANTE: Remove barra final e barras duplas, mas preserva :// do protocolo
+   */
+  private normalizeBaseUrl(baseUrl: string): string {
+    if (!baseUrl) return baseUrl;
+    
+    // Remove espaços em branco
+    let normalized = baseUrl.trim();
+    
+    // Remove barra final se existir (pode ter múltiplas barras)
+    normalized = normalized.replace(/\/+$/, '');
+    
+    // Remove barras duplas no meio da URL, mas preserva :// do protocolo (http:// ou https://)
+    // Regex: substitui / seguido de uma ou mais / por apenas uma /, mas não mexe em ://
+    normalized = normalized.replace(/([^:]\/)\/+/g, '$1');
+    
+    return normalized;
+  }
+
   async addParticipantsToGroup(
     instanceName: string,
     apiKey: string,
@@ -184,15 +221,35 @@ export class EvolutionService {
     responseData?: any;
   }> {
     const startTime = Date.now();
+    
+    // Normaliza a base_url para garantir formato correto
+    const normalizedBaseUrl = this.normalizeBaseUrl(baseUrl);
+    
     // Passa groupJid como parâmetro na URL (a API Evolution espera 'groupJid', não 'groupId')
-    const url = `${baseUrl}/group/updateParticipant/${instanceName}?groupJid=${encodeURIComponent(groupId)}`;
+    const url = `${normalizedBaseUrl}/group/updateParticipant/${instanceName}?groupJid=${encodeURIComponent(groupId)}`;
+    
+    // Validação final: remove qualquer barra dupla que possa ter sobrado
+    const finalUrl = url.replace(/([^:]\/)\/+/g, '$1');
+    
+    // Validação adicional: verifica se não há barras duplas
+    if (finalUrl.includes('//') && !finalUrl.includes('://')) {
+      console.error(`❌ [Evolution API] ERRO: URL ainda contém barras duplas após normalização: ${finalUrl}`);
+      // Tenta corrigir novamente
+      const correctedUrl = finalUrl.replace(/([^:]\/)\/+/g, '$1');
+      console.log(`🔧 [Evolution API] Tentando corrigir: ${correctedUrl}`);
+    }
+    
     const payload = {
       action: 'add',
       participants: participants,
     };
 
+    console.log(`📤 [Evolution API] Base URL original: ${baseUrl}`);
+    console.log(`📤 [Evolution API] Base URL normalizada: ${normalizedBaseUrl}`);
+    console.log(`📤 [Evolution API] URL final: ${finalUrl}`);
+    console.log(`✅ [Evolution API] Validação: URL contém barras duplas? ${finalUrl.includes('//') && !finalUrl.includes('://') ? 'SIM (ERRO!)' : 'NÃO (OK)'}`);
     console.log(`📤 [Evolution API] Enviando requisição:`, {
-      url,
+      url: finalUrl,
       instanceName,
       groupId,
       groupJidInUrl: true, // Usa groupJid conforme esperado pela API
@@ -212,7 +269,7 @@ export class EvolutionService {
       
       let response: Response;
       try {
-        response = await fetch(url, {
+        response = await fetch(finalUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

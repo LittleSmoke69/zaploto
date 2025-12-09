@@ -51,8 +51,15 @@ export async function POST(req: NextRequest) {
     }
 
     // Verifica rate limit diário
+    // IMPORTANTE: Permite múltiplas campanhas ativas simultaneamente
+    // O limite é por leads processados no dia, não por número de campanhas
+    console.log(`🔍 [CAMPANHA ${campaignId}] Verificando rate limits para permitir múltiplas campanhas simultâneas...`);
+    
     const rateLimit = await rateLimitService.checkDailyLimit(userId);
+    console.log(`📊 [CAMPANHA ${campaignId}] Rate limit diário: ${rateLimit.remaining}/${rateLimit.limit} leads restantes`);
+    
     if (!rateLimit.allowed) {
+      console.warn(`⚠️ [CAMPANHA ${campaignId}] Limite diário atingido: ${rateLimit.limit} leads`);
       return errorResponse(
         `Limite diário atingido. Você pode adicionar até ${rateLimit.limit} leads por dia. Reset em ${new Date(rateLimit.resetAt).toLocaleTimeString()}`,
         429
@@ -61,6 +68,7 @@ export async function POST(req: NextRequest) {
 
     // Verifica se há leads suficientes no limite
     if (jobs.length > rateLimit.remaining) {
+      console.warn(`⚠️ [CAMPANHA ${campaignId}] Leads insuficientes no limite: ${jobs.length} solicitados, ${rateLimit.remaining} disponíveis`);
       return errorResponse(
         `Você pode adicionar apenas ${rateLimit.remaining} leads hoje. Tente novamente amanhã ou reduza a quantidade.`,
         429
@@ -68,15 +76,36 @@ export async function POST(req: NextRequest) {
     }
 
     // Verifica limite de instâncias
+    // IMPORTANTE: Este limite é sobre instâncias do sistema, não campanhas
+    // Múltiplas campanhas podem compartilhar as mesmas instâncias via balanceador
     const instanceLimit = await rateLimitService.checkInstanceLimit(userId);
+    console.log(`📊 [CAMPANHA ${campaignId}] Limite de instâncias: ${instanceLimit.current}/${instanceLimit.max} instâncias ativas no sistema`);
+    
     if (!instanceLimit.allowed) {
+      console.warn(`⚠️ [CAMPANHA ${campaignId}] Limite de instâncias atingido: ${instanceLimit.max} instâncias`);
       return errorResponse(
-        `Limite de instâncias atingido. Máximo: ${instanceLimit.max}`,
+        `Limite de instâncias atingido. Máximo: ${instanceLimit.max} instâncias ativas no sistema.`,
         429
       );
     }
+    
+    // Verifica se há campanhas ativas (apenas para log, não bloqueia)
+    const { data: activeCampaigns } = await supabaseServiceRole
+      .from('campaigns')
+      .select('id, status')
+      .eq('user_id', userId)
+      .in('status', ['running', 'paused']);
+    
+    const activeCount = activeCampaigns?.length || 0;
+    console.log(`✅ [CAMPANHA ${campaignId}] Sistema permite múltiplas campanhas ativas. Campanhas ativas atuais: ${activeCount}`);
+    
+    if (activeCount > 0) {
+      console.log(`🔄 [CAMPANHA ${campaignId}] Iniciando nova campanha com ${activeCount} campanha(s) já ativa(s). O balanceador distribuirá a carga entre todas as Evolution APIs.`);
+    }
 
-    // Atualiza status da campanha para 'running'
+    // Atualiza status da campanha para 'running' IMEDIATAMENTE
+    // OTIMIZAÇÃO: Atualiza status antes de iniciar processamento para feedback visual rápido
+    console.log(`⚡ [CAMPANHA ${campaignId}] Atualizando status para 'running' IMEDIATAMENTE...`);
     await supabaseServiceRole
       .from('campaigns')
       .update({
@@ -85,6 +114,7 @@ export async function POST(req: NextRequest) {
         updated_at: new Date().toISOString(),
       })
       .eq('id', campaignId);
+    console.log(`✅ [CAMPANHA ${campaignId}] Status atualizado para 'running'. Processamento iniciando...`);
 
     // Processa a campanha de forma assíncrona (não bloqueia a resposta)
     // IMPORTANTE: Na Netlify, precisamos garantir que a função continue executando
@@ -104,12 +134,14 @@ export async function POST(req: NextRequest) {
       // Já tratado acima
     });
 
+    console.log(`✅ [CAMPANHA ${campaignId}] Campanha iniciada com sucesso! Total de jobs: ${jobs.length}. Sistema suporta múltiplas campanhas simultâneas.`);
+    
     return successResponse(
       {
         campaignId,
         status: 'running',
         totalJobs: jobs.length,
-        message: 'Campanha iniciada. Processamento em andamento.',
+        message: 'Campanha iniciada. Processamento em andamento. Múltiplas campanhas podem rodar simultaneamente.',
       },
       'Campanha iniciada com sucesso'
     );
@@ -131,7 +163,7 @@ async function processCampaignAsync(
   console.log(`[${timestamp}] 🚀 [PROCESS_CAMPAIGN_ASYNC] Função iniciada - Campanha: ${campaignId}, Jobs: ${jobs.length}, UserId: ${userId}`);
   
   try {
-    console.log(`[${timestamp}] 🚀 [PROCESS_CAMPAIGN_ASYNC] Iniciando processamento da campanha ${campaignId} - ${jobs.length} jobs`);
+    console.log(`[${timestamp}] 🚀 [PROCESS_CAMPAIGN_ASYNC] Iniciando processamento IMEDIATO da campanha ${campaignId} - ${jobs.length} jobs`);
 
     const strategy = campaign.strategy || {};
     const groupId = campaign.group_id;
@@ -156,7 +188,8 @@ async function processCampaignAsync(
 
     // Verifica se há instâncias disponíveis usando o balanceador
     // Balanceamento automático distribui carga entre TODAS as Evolution APIs ativas
-    console.log(`🔍 [CAMPANHA ${campaignId}] Verificando instâncias disponíveis...`);
+    // OTIMIZAÇÃO: Esta verificação é rápida e não bloqueia o início
+    console.log(`🔍 [CAMPANHA ${campaignId}] Verificando instâncias disponíveis (verificação rápida)...`);
     const testInstance = await evolutionBalancer.pickBestEvolutionInstance({
       userId,
       preferUserBinding, // Opcional - se false, usa todas as APIs disponíveis
@@ -176,6 +209,7 @@ async function processCampaignAsync(
     }
 
     console.log(`✅ [CAMPANHA ${campaignId}] Instância selecionada: ${testInstance.instance_name}`);
+    console.log(`🚀 [CAMPANHA ${campaignId}] PRIMEIRO JOB será executado IMEDIATAMENTE após esta verificação`);
 
     // Função para normalizar número de telefone (adiciona 55 se não tiver, remove duplicação)
     const normalizePhoneNumber = (phone: string): string => {

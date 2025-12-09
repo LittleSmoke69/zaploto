@@ -83,11 +83,19 @@ export async function POST(req: NextRequest) {
       return errorResponse('base_url deve ser uma URL válida', 400);
     }
 
+    // Normaliza a base_url: remove barra final e espaços
+    // A barra será adicionada automaticamente ao construir URLs completas
+    let normalizedBaseUrl = base_url.trim();
+    normalizedBaseUrl = normalizedBaseUrl.replace(/\/+$/, ''); // Remove barras finais
+    normalizedBaseUrl = normalizedBaseUrl.replace(/([^:]\/)\/+/g, '$1'); // Remove barras duplas no meio
+
+    console.log(`🔧 [ADMIN] Normalizando base_url: "${base_url}" -> "${normalizedBaseUrl}"`);
+
     const { data, error } = await supabaseServiceRole
       .from('evolution_apis')
       .insert({
         name,
-        base_url: base_url.endsWith('/') ? base_url : `${base_url}/`,
+        base_url: normalizedBaseUrl, // Salva sem barra final
         api_key,
         description: description || null,
         is_active: is_active !== undefined ? is_active : true,

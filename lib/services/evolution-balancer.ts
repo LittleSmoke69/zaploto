@@ -337,6 +337,26 @@ export class EvolutionBalancer {
   }
 
   /**
+   * Normaliza a URL base removendo barras duplas e garantindo formato correto
+   * IMPORTANTE: Remove barra final e barras duplas, mas preserva :// do protocolo
+   */
+  private normalizeBaseUrl(baseUrl: string): string {
+    if (!baseUrl) return baseUrl;
+    
+    // Remove espaços em branco
+    let normalized = baseUrl.trim();
+    
+    // Remove barra final se existir (pode ter múltiplas barras)
+    normalized = normalized.replace(/\/+$/, '');
+    
+    // Remove barras duplas no meio da URL, mas preserva :// do protocolo (http:// ou https://)
+    // Regex: substitui / seguido de uma ou mais / por apenas uma /, mas não mexe em ://
+    normalized = normalized.replace(/([^:]\/)\/+/g, '$1');
+    
+    return normalized;
+  }
+
+  /**
    * Chama a Evolution API para adicionar participantes (wrapper com base_url customizada)
    */
   private async callEvolutionAddParticipants(
@@ -353,13 +373,32 @@ export class EvolutionBalancer {
     httpStatus?: number;
     responseData?: any;
   }> {
-    const url = `${baseUrl}/group/updateParticipant/${instanceName}?groupJid=${encodeURIComponent(groupId)}`;
+    // Normaliza a base_url para garantir formato correto
+    const normalizedBaseUrl = this.normalizeBaseUrl(baseUrl);
+    
+    // Constrói a URL garantindo apenas uma barra entre base_url e o path
+    const url = `${normalizedBaseUrl}/group/updateParticipant/${instanceName}?groupJid=${encodeURIComponent(groupId)}`;
+    
+    // Validação final: remove qualquer barra dupla que possa ter sobrado
+    const finalUrl = url.replace(/([^:]\/)\/+/g, '$1');
+    
+    // Validação adicional: verifica se não há barras duplas
+    if (finalUrl.includes('//') && !finalUrl.includes('://')) {
+      console.error(`❌ [BALANCEADOR] ERRO: URL ainda contém barras duplas após normalização: ${finalUrl}`);
+      // Tenta corrigir novamente
+      const correctedUrl = finalUrl.replace(/([^:]\/)\/+/g, '$1');
+      console.log(`🔧 [BALANCEADOR] Tentando corrigir: ${correctedUrl}`);
+    }
+    
     const payload = {
       action: 'add',
       participants: participants,
     };
 
-    console.log(`📤 [BALANCEADOR] callEvolutionAddParticipants - URL: ${url}`);
+    console.log(`📤 [BALANCEADOR] callEvolutionAddParticipants - Base URL original: ${baseUrl}`);
+    console.log(`📤 [BALANCEADOR] callEvolutionAddParticipants - Base URL normalizada: ${normalizedBaseUrl}`);
+    console.log(`📤 [BALANCEADOR] callEvolutionAddParticipants - URL final: ${finalUrl}`);
+    console.log(`✅ [BALANCEADOR] Validação: URL contém barras duplas? ${finalUrl.includes('//') && !finalUrl.includes('://') ? 'SIM (ERRO!)' : 'NÃO (OK)'}`);
     console.log(`📤 [BALANCEADOR] Payload:`, JSON.stringify(payload));
     console.log(`📤 [BALANCEADOR] Headers: apikey presente: ${!!apiKey}`);
 
@@ -377,7 +416,7 @@ export class EvolutionBalancer {
       
       let response: Response;
       try {
-        response = await fetch(url, {
+        response = await fetch(finalUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

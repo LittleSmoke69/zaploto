@@ -320,8 +320,9 @@ export const useDashboardData = () => {
           }
 
           if (hasActiveCampaigns) {
-            // Polling rápido quando há campanhas ativas (1.5s para atualização mais frequente)
-            interval = setInterval(updateCampaigns, 1500);
+            // Polling muito rápido quando há campanhas ativas ou pendentes (1s para feedback visual imediato)
+            // Isso garante que o overlay desapareça rapidamente quando status mudar de 'pending' para 'running'
+            interval = setInterval(updateCampaigns, 1000);
           } else {
             // Polling lento quando não há campanhas ativas (apenas para atualizar histórico)
             interval = setInterval(updateCampaigns, 30000);
