@@ -12,10 +12,13 @@ import {
   Info,
   X,
   FileText,
+  Menu,
 } from 'lucide-react';
+import { useSidebar } from '@/contexts/SidebarContext';
 
 const ImportContactsPage = () => {
   const { checking } = useRequireAuth();
+  const { isCollapsed, setIsCollapsed, isMobileOpen, setIsMobileOpen } = useSidebar();
   const {
     userId,
     showToast,
@@ -201,17 +204,29 @@ const ImportContactsPage = () => {
         ))}
       </div>
 
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-800 mb-2">Importar Contatos</h1>
-          <p className="text-gray-600">Importe contatos via arquivo CSV</p>
+      <div className="space-y-6 w-full">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex-1">
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">Importar Contatos</h1>
+            <p className="text-sm sm:text-base text-gray-600">Importe contatos via arquivo CSV</p>
+          </div>
+          {/* Botão Toggle da Sidebar - Apenas no mobile, no topo direito */}
+          <div className="lg:hidden flex-shrink-0">
+            <button
+              onClick={() => setIsMobileOpen(!isMobileOpen)}
+              className="flex items-center justify-center w-10 h-10 rounded-lg hover:bg-gray-100 transition text-gray-600 shadow-md bg-white"
+              aria-label="Toggle sidebar"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         <div className="bg-white rounded-xl shadow-md p-6">
           <h2 className="text-lg font-semibold text-gray-800 mb-4">Importar Contatos via CSV</h2>
 
           {/* Regras do arquivo */}
-          <div className="mb-6 p-4 bg-emerald-50 border-2 border-emerald-200 rounded-lg">
+          <div className="mb-6 p-4 bg-emerald-50 border-2 border-emerald-200 rounded-lg" data-tour-id="importar-regras">
             <h3 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
               <FileText className="w-5 h-5 text-emerald-600" />
               Regras do arquivo:
@@ -240,7 +255,7 @@ const ImportContactsPage = () => {
 
           {/* Upload */}
           <div className="space-y-4">
-            <div>
+            <div data-tour-id="importar-upload">
               <label className="block w-full">
                 <div className="cursor-pointer flex flex-col items-center justify-center gap-3 px-6 py-8 bg-white border-2 border-dashed border-emerald-300 rounded-lg hover:bg-emerald-50 transition text-center">
                   <Upload className="w-8 h-8 text-emerald-600" />
@@ -253,7 +268,7 @@ const ImportContactsPage = () => {
                       Arquivo selecionado: <strong>{csvFileName}</strong>
                     </p>
                   )}
-                  <p className="text-xs text-gray-500">CSV até 10.000 linhas</p>
+                  <p className="text-xs text-gray-500" data-tour-id="importar-exemplo">CSV até 10.000 linhas</p>
                 </div>
                 <input
                   type="file"

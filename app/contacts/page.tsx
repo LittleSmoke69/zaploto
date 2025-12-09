@@ -18,11 +18,14 @@ import {
   List,
   Plus,
   Save,
+  Menu,
 } from 'lucide-react';
+import { useSidebar } from '@/contexts/SidebarContext';
 import { supabase } from '@/lib/supabase';
 
 const ContactsPage = () => {
   const { checking } = useRequireAuth();
+  const { isCollapsed, setIsCollapsed, isMobileOpen, setIsMobileOpen } = useSidebar();
   const {
     userId,
     contacts,
@@ -450,12 +453,22 @@ const ContactsPage = () => {
       </div>
 
       <div className="space-y-4 sm:space-y-6 px-4 sm:px-0">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-          <div>
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex-1">
             <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-1 sm:mb-2">Contatos Ativos</h1>
             <p className="text-sm sm:text-base text-gray-600">Gerencie seus contatos ({contacts.length} total)</p>
           </div>
-          <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+          <div className="flex flex-wrap gap-2 items-center flex-shrink-0">
+            {/* Botão Toggle da Sidebar - Apenas no mobile, no topo direito */}
+            <div className="lg:hidden">
+              <button
+                onClick={() => setIsMobileOpen(!isMobileOpen)}
+                className="flex items-center justify-center w-10 h-10 rounded-lg hover:bg-gray-100 transition text-gray-600 shadow-md bg-white"
+                aria-label="Toggle sidebar"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+            </div>
             <button
               onClick={handleExportCSV}
               className="flex-1 sm:flex-none px-3 sm:px-4 py-2 border-2 border-emerald-600 text-emerald-600 rounded-lg hover:bg-emerald-50 transition flex items-center justify-center gap-2 text-sm sm:text-base"
@@ -538,7 +551,7 @@ const ContactsPage = () => {
         </div>
 
         {/* Lista de Contatos */}
-        <div className="bg-white rounded-xl shadow-md p-4 sm:p-6 overflow-x-hidden">
+        <div className="bg-white rounded-xl shadow-md p-4 sm:p-6 overflow-x-hidden" data-tour-id="contatos-lista">
           {paginatedContacts.length === 0 ? (
             <div className="text-center py-12">
               <p className="text-gray-500">Nenhum contato encontrado</p>
@@ -676,7 +689,7 @@ const ContactsPage = () => {
         <div className="bg-white rounded-xl shadow-md p-4 sm:p-6">
           <h2 className="text-lg font-semibold text-gray-800 mb-4">Gerenciar Grupos da Instância</h2>
           <div className="space-y-4">
-            <div>
+            <div data-tour-id="contatos-selecionar-instancia">
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Escolha a Instância*
               </label>
@@ -736,6 +749,7 @@ const ContactsPage = () => {
                 onClick={handleLoadGroups}
                 disabled={!selectedInstance || loadingGroups}
                 className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium transition disabled:opacity-50 flex items-center justify-center gap-2"
+                data-tour-id="contatos-carregar-grupos"
               >
                 <RefreshCw className={`w-4 h-4 ${loadingGroups ? 'animate-spin' : ''}`} />
                 {loadingGroups ? 'Carregando...' : 'Carregar Grupos da instância'}
@@ -745,6 +759,7 @@ const ContactsPage = () => {
               onClick={handleExtractContactsFromGroup}
               disabled={!selectedGroup || !selectedInstance || extractingContacts}
               className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium transition disabled:opacity-50"
+              data-tour-id="contatos-extrair"
             >
               {extractingContacts ? 'Extraindo...' : 'Extrair Contatos'}
             </button>

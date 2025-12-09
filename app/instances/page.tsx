@@ -18,7 +18,9 @@ import {
   CheckCircle2,
   AlertCircle,
   Info,
+  Menu,
 } from 'lucide-react';
+import { useSidebar } from '@/contexts/SidebarContext';
 import { supabase } from '@/lib/supabase';
 
 const EVOLUTION_BASE = process.env.NEXT_PUBLIC_EVOLUTION_BASE!;
@@ -26,6 +28,7 @@ const QR_WINDOW_SECONDS = 30;
 
 const InstancesPage = () => {
   const { checking } = useRequireAuth();
+  const { isCollapsed, setIsCollapsed, isMobileOpen, setIsMobileOpen } = useSidebar();
   const {
     userId,
     instances,
@@ -514,17 +517,29 @@ const InstancesPage = () => {
         ))}
       </div>
 
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-800 mb-2">Instâncias WhatsApp</h1>
-          <p className="text-gray-600">Gerencie suas instâncias e grupos</p>
+      <div className="space-y-6 w-full">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex-1">
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">Instâncias WhatsApp</h1>
+            <p className="text-sm sm:text-base text-gray-600">Gerencie suas instâncias e grupos</p>
+          </div>
+          {/* Botão Toggle da Sidebar - Apenas no mobile, no topo direito */}
+          <div className="lg:hidden flex-shrink-0">
+            <button
+              onClick={() => setIsMobileOpen(!isMobileOpen)}
+              className="flex items-center justify-center w-10 h-10 rounded-lg hover:bg-gray-100 transition text-gray-600 shadow-md bg-white"
+              aria-label="Toggle sidebar"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Coluna Esquerda */}
           <div className="space-y-6">
             {/* Configure sua Instância */}
-            <div className="bg-white rounded-xl shadow-md p-6">
+            <div className="bg-white rounded-xl shadow-md p-6" data-tour-id="instancias-criar">
               <h2 className="text-lg font-semibold text-gray-800 mb-4">Configure sua Instância</h2>
               <div className="space-y-4">
                 <div>
@@ -564,7 +579,7 @@ const InstancesPage = () => {
             </div>
 
             {/* Gerenciar Grupos da Instância */}
-            <div className="bg-white rounded-xl shadow-md p-6">
+            <div className="bg-white rounded-xl shadow-md p-6" data-tour-id="instancias-gerenciar-grupos">
               <h2 className="text-lg font-semibold text-gray-800 mb-4">Gerenciar Grupos da Instância</h2>
               <div className="space-y-4">
                 <div>
@@ -588,21 +603,21 @@ const InstancesPage = () => {
             </div>
 
             {/* Grupos Salvos no Banco */}
-            <div className="bg-white rounded-xl shadow-md p-6">
-              <div className="flex justify-between items-center mb-4">
-                <div>
-                  <h2 className="text-lg font-semibold text-gray-800">Grupos Salvos no Banco</h2>
+            <div className="bg-white rounded-xl shadow-md p-6" data-tour-id="instancias-marcar-grupos">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-lg font-semibold text-gray-800 break-words">Grupos Salvos no Banco</h2>
                   <p className="text-sm text-gray-500">Selecione um para usar no envio</p>
                 </div>
-                <div className="flex gap-2">
-                  <div className="relative">
+                <div className="flex gap-2 w-full sm:w-auto">
+                  <div className="relative flex-1 sm:flex-none">
                     <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
                     <input
                       type="text"
                       value={savedGroupsSearch}
                       onChange={e => setSavedGroupsSearch(e.target.value)}
                       placeholder="Pesquisar..."
-                      className="pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 text-black placeholder:text-black"
+                      className="w-full sm:w-auto pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 text-black placeholder:text-black"
                     />
                   </div>
                 </div>
@@ -673,6 +688,7 @@ const InstancesPage = () => {
                   onClick={handleLoadGroups}
                   disabled={!selectedInstance || groupsLoading}
                   className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium transition disabled:opacity-50"
+                  data-tour-id="instancias-carregar-grupos"
                 >
                   {groupsLoading ? 'Carregando...' : 'Carregar Grupos da instância'}
                 </button>
@@ -730,7 +746,7 @@ const InstancesPage = () => {
           {/* Coluna Direita */}
           <div className="space-y-6">
             {/* Extrair Contatos do Grupo */}
-            <div className="bg-white rounded-xl shadow-md p-6">
+            <div className="bg-white rounded-xl shadow-md p-6" data-tour-id="instancias-extrair-contatos">
               <h2 className="text-lg font-semibold text-gray-800 mb-4">Extrair Contatos do Grupo</h2>
               <div className="space-y-4">
                 <div>
@@ -765,7 +781,7 @@ const InstancesPage = () => {
             </div>
 
             {/* Contatos Extraídos */}
-            <div className="bg-white rounded-xl shadow-md p-6">
+            <div className="bg-white rounded-xl shadow-md p-6" data-tour-id="instancias-lista-contatos">
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-lg font-semibold text-gray-800">Contatos Extraídos</h2>
                 <select className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 text-black">
@@ -798,7 +814,7 @@ const InstancesPage = () => {
 
             {/* Lista de Instâncias */}
             {instances.length > 0 && (
-              <div className="bg-white rounded-xl shadow-md p-6">
+              <div className="bg-white rounded-xl shadow-md p-6" data-tour-id="instancias-conectadas">
                 <h2 className="text-lg font-semibold text-gray-800 mb-4">Lista de Instâncias</h2>
                 <div className="space-y-3">
                   {instances.map(inst => {

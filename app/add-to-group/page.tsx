@@ -15,7 +15,9 @@ import {
   X,
   Clock,
   XCircle,
+  Menu,
 } from 'lucide-react';
+import { useSidebar } from '@/contexts/SidebarContext';
 import { supabase } from '@/lib/supabase';
 
 type DelayUnit = 'seconds' | 'minutes';
@@ -23,6 +25,7 @@ type DistributionMode = 'sequential' | 'random';
 
 const AddToGroupPage = () => {
   const { checking } = useRequireAuth();
+  const { isCollapsed, setIsCollapsed, isMobileOpen, setIsMobileOpen } = useSidebar();
   const {
     userId,
     instances,
@@ -240,13 +243,25 @@ const AddToGroupPage = () => {
         ))}
       </div>
 
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-800 mb-2">Adição em Grupo</h1>
-          <p className="text-gray-600">Configure e inicie a adição de contatos aos grupos</p>
+      <div className="space-y-6 w-full">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex-1">
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">Adição em Grupo</h1>
+            <p className="text-sm sm:text-base text-gray-600">Configure e inicie a adição de contatos aos grupos</p>
+          </div>
+          {/* Botão Toggle da Sidebar - Apenas no mobile, no topo direito */}
+          <div className="lg:hidden flex-shrink-0">
+            <button
+              onClick={() => setIsMobileOpen(!isMobileOpen)}
+              className="flex items-center justify-center w-10 h-10 rounded-lg hover:bg-gray-100 transition text-gray-600 shadow-md bg-white"
+              aria-label="Toggle sidebar"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
-        <div className="bg-white rounded-xl shadow-md p-6 space-y-6">
+        <div className="bg-white rounded-xl shadow-md p-6 space-y-6" data-tour-id="adicao-configuracao">
           {/* Instância base */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -281,7 +296,7 @@ const AddToGroupPage = () => {
 
           {/* Múltiplas instâncias */}
           {multiInstancesMode && (
-            <div className="border border-blue-200 rounded-lg p-4 bg-blue-50/30">
+            <div className="border border-blue-200 rounded-lg p-4 bg-blue-50/30" data-tour-id="adicao-multiplas-instancias">
               <label className="block text-sm font-medium text-gray-700 mb-3">
                 Selecionar Instâncias:
               </label>
@@ -353,11 +368,11 @@ const AddToGroupPage = () => {
           </div>
 
           {/* Atraso entre inclusões */}
-          <div>
+          <div data-tour-id="adicao-tempo-random">
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Atraso entre inclusões
             </label>
-            <div className="flex gap-2">
+            <div className="flex flex-col sm:flex-row gap-2">
               <input
                 type="number"
                 value={addDelayValue}
@@ -365,13 +380,13 @@ const AddToGroupPage = () => {
                 placeholder="Digite uma Quantidade*"
                 min="0"
                 disabled={addRandom}
-                className="flex-1 px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 disabled:opacity-50 text-black placeholder:text-black"
+                className="flex-1 min-w-0 px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 disabled:opacity-50 text-black placeholder:text-black"
               />
               <select
                 value={addDelayUnit}
                 onChange={e => setAddDelayUnit(e.target.value as DelayUnit)}
                 disabled={addRandom}
-                className="px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 disabled:opacity-50 text-black"
+                className="w-full sm:w-auto px-4 py-3 border-2 border-gray-200 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 disabled:opacity-50 text-black"
               >
                 <option value="seconds">Segundos</option>
                 <option value="minutes">Minutos</option>
@@ -417,7 +432,7 @@ const AddToGroupPage = () => {
           </div>
 
           {/* Concorrência */}
-          <div>
+          <div data-tour-id="adicao-concorrencia">
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Concorrência (Envios em Paralelo)
             </label>
@@ -436,29 +451,29 @@ const AddToGroupPage = () => {
           </div>
 
           {/* Botões de ação */}
-          <div className="flex gap-4 pt-4">
+          <div className="flex flex-col sm:flex-row gap-4 pt-4" data-tour-id="adicao-controle-campanha">
             <button
               onClick={handleAddToGroup}
               disabled={addingToGroup || !selectedGroupJid || (!multiInstancesMode ? !selectedInstance : instancesForAdd.length === 0)}
-              className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium transition disabled:opacity-50 flex items-center justify-center gap-2"
+              className="w-full sm:flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium transition disabled:opacity-50 flex items-center justify-center gap-2"
             >
               <Plus className="w-5 h-5" />
-              {addingToGroup ? 'Iniciando...' : 'Iniciar Inclusão'}
+              <span className="whitespace-nowrap">{addingToGroup ? 'Iniciando...' : 'Iniciar Inclusão'}</span>
             </button>
             <button
               onClick={() => setAddPaused(!addPaused)}
               disabled={!addingToGroup}
-              className="px-6 py-3 border-2 border-emerald-600 text-emerald-600 rounded-lg font-medium hover:bg-emerald-50 transition disabled:opacity-50 flex items-center gap-2"
+              className="w-full sm:w-auto px-6 py-3 border-2 border-emerald-600 text-emerald-600 rounded-lg font-medium hover:bg-emerald-50 transition disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {addPaused ? (
                 <>
                   <Play className="w-5 h-5" />
-                  Retomar Inclusão
+                  <span className="whitespace-nowrap">Retomar Inclusão</span>
                 </>
               ) : (
                 <>
                   <Pause className="w-5 h-5" />
-                  Pausar Inclusão
+                  <span className="whitespace-nowrap">Pausar Inclusão</span>
                 </>
               )}
             </button>
@@ -466,9 +481,10 @@ const AddToGroupPage = () => {
         </div>
 
         {/* Campanhas Ativas */}
-        <ActiveCampaigns
-          campaigns={campaigns}
-          onPause={async (campaignId: string) => {
+        <div data-tour-id="adicao-campanhas-ativas">
+          <ActiveCampaigns
+            campaigns={campaigns}
+            onPause={async (campaignId: string) => {
             try {
               const response = await fetch(`/api/campaigns/${campaignId}`, {
                 method: 'PATCH',
@@ -528,10 +544,11 @@ const AddToGroupPage = () => {
               showToast('Erro ao excluir campanha', 'error');
             }
           }}
-        />
+          />
+        </div>
 
         {/* Histórico de Campanhas */}
-        <div className="bg-white rounded-xl shadow-md p-6">
+        <div className="bg-white rounded-xl shadow-md p-6" data-tour-id="adicao-historico">
           <h2 className="text-lg font-semibold text-gray-800 mb-4">Histórico de Campanhas</h2>
           {(() => {
             const historyCampaigns = campaigns.filter(

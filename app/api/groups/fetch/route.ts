@@ -17,16 +17,41 @@ export async function POST(req: NextRequest) {
       return errorResponse('instanceName é obrigatório', 400);
     }
 
-    // Busca hash da instância
+    // Busca a instância e sua Evolution API
+    const { data: userApis } = await supabaseServiceRole
+      .from('user_evolution_apis')
+      .select('evolution_api_id')
+      .eq('user_id', userId);
+
+    if (!userApis || userApis.length === 0) {
+      return errorResponse('Nenhuma Evolution API configurada para este usuário', 404);
+    }
+
+    const apiIds = userApis.map(ua => ua.evolution_api_id);
     const { data: instance, error: instanceError } = await supabaseServiceRole
-      .from('whatsapp_instances')
-      .select('hash')
-      .eq('user_id', userId)
+      .from('evolution_instances')
+      .select(`
+        *,
+        evolution_apis!inner (
+          id,
+          base_url,
+          api_key
+        )
+      `)
+      .in('evolution_api_id', apiIds)
       .eq('instance_name', instanceName)
       .single();
 
-    if (instanceError || !instance || !instance.hash) {
-      return errorResponse('Instância não encontrada ou sem API key', 404);
+    if (instanceError || !instance) {
+      return errorResponse('Instância não encontrada', 404);
+    }
+
+    const evolutionApi = Array.isArray(instance.evolution_apis) 
+      ? instance.evolution_apis[0] 
+      : instance.evolution_apis;
+
+    if (!evolutionApi?.api_key) {
+      return errorResponse('Instância sem API key configurada', 404);
     }
 
     // Busca grupos na Evolution (com timeout)
@@ -48,10 +73,10 @@ export async function POST(req: NextRequest) {
           }
         };
 
-        const url = `${process.env.EVOLUTION_BASE || process.env.NEXT_PUBLIC_EVOLUTION_BASE}/group/fetchAllGroups/${instanceName}?getParticipants=true`;
+        const url = `${evolutionApi.base_url}/group/fetchAllGroups/${instanceName}?getParticipants=true`;
         const resp = await fetchWithTimeout(
           url,
-          { method: 'GET', headers: { apikey: instance.hash } },
+          { method: 'GET', headers: { apikey: evolutionApi.api_key } },
           PER_TRY_TIMEOUT
         );
 

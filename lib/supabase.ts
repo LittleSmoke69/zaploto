@@ -166,6 +166,7 @@ export interface Database {
           email: string;
           password_hash: string;      // armazenamos o hash
           status: string | null;      // 'admin' para administradores
+          tutorial_acess: boolean | null; // controle de acesso ao tutorial
           created_at: string;
           updated_at: string | null;
         };
@@ -175,6 +176,7 @@ export interface Database {
           email: string;
           password_hash: string;
           status?: string | null;
+          tutorial_acess?: boolean | null;
           created_at?: string;
           updated_at?: string | null;
         };
@@ -184,6 +186,7 @@ export interface Database {
           email?: string;
           password_hash?: string;
           status?: string | null;
+          tutorial_acess?: boolean | null;
           created_at?: string;
           updated_at?: string | null;
         };
@@ -270,6 +273,156 @@ export interface Database {
           is_active?: boolean;
           created_at?: string;
           updated_at?: string;
+        };
+      };
+
+      evolution_apis: {
+        Row: {
+          id: string;
+          name: string;
+          base_url: string;
+          api_key: string;
+          is_active: boolean;
+          description: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          name: string;
+          base_url: string;
+          api_key: string;
+          is_active?: boolean;
+          description?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          name?: string;
+          base_url?: string;
+          api_key?: string;
+          is_active?: boolean;
+          description?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+
+      user_evolution_apis: {
+        Row: {
+          id: string;
+          user_id: string;
+          evolution_api_id: string;
+          is_default: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          evolution_api_id: string;
+          is_default?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          evolution_api_id?: string;
+          is_default?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+
+      evolution_instances: {
+        Row: {
+          id: string;
+          evolution_api_id: string;
+          instance_name: string;
+          phone_number: string | null;
+          is_active: boolean;
+          status: string; // 'ok', 'rate_limited', 'blocked', 'error', 'disconnected'
+          daily_limit: number | null;
+          sent_today: number;
+          error_today: number;
+          rate_limit_count_today: number;
+          last_used_at: string | null;
+          cooldown_until: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          evolution_api_id: string;
+          instance_name: string;
+          phone_number?: string | null;
+          is_active?: boolean;
+          status?: string;
+          daily_limit?: number | null;
+          sent_today?: number;
+          error_today?: number;
+          rate_limit_count_today?: number;
+          last_used_at?: string | null;
+          cooldown_until?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          evolution_api_id?: string;
+          instance_name?: string;
+          phone_number?: string | null;
+          is_active?: boolean;
+          status?: string;
+          daily_limit?: number | null;
+          sent_today?: number;
+          error_today?: number;
+          rate_limit_count_today?: number;
+          last_used_at?: string | null;
+          cooldown_until?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+
+      evolution_instance_logs: {
+        Row: {
+          id: string;
+          evolution_instance_id: string;
+          type: string; // 'success', 'error', 'rate_limit', 'blocked'
+          http_status: number | null;
+          error_code: string | null;
+          error_message: string | null;
+          group_id: string | null;
+          lead_phone: string | null;
+          raw_response_snippet: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          evolution_instance_id: string;
+          type: string;
+          http_status?: number | null;
+          error_code?: string | null;
+          error_message?: string | null;
+          group_id?: string | null;
+          lead_phone?: string | null;
+          raw_response_snippet?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          evolution_instance_id?: string;
+          type?: string;
+          http_status?: number | null;
+          error_code?: string | null;
+          error_message?: string | null;
+          group_id?: string | null;
+          lead_phone?: string | null;
+          raw_response_snippet?: string | null;
+          created_at?: string;
         };
       };
     };

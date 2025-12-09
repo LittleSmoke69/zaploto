@@ -4,6 +4,7 @@ import { successResponse, errorResponse, serverErrorResponse } from '@/lib/utils
 import { supabaseServiceRole } from '@/lib/services/supabase-service';
 import { evolutionService } from '@/lib/services/evolution-service';
 import { rateLimitService } from '@/lib/services/rate-limit-service';
+import { evolutionBalancer } from '@/lib/services/evolution-balancer';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300; // 5 minutos para processamento assíncrono
@@ -124,19 +125,15 @@ async function processCampaignAsync(
   console.log(`${'='.repeat(80)}\n`);
 
   const strategy = campaign.strategy || {};
-  const instances = campaign.instances || [];
   const groupId = campaign.group_id;
   const delayConfig = strategy.delayConfig || {};
-  const concurrency = Math.max(1, Math.min(10, strategy.concurrency || 1)); // Limita entre 1 e 10
-  const distributionMode = strategy.distributionMode || 'round_robin';
+  const preferUserBinding = strategy.preferUserBinding !== false; // Por padrão, tenta usar instâncias do usuário
 
   console.log(`📋 Configurações da Campanha:`, {
     groupId,
-    instances: instances.length,
-    instanceNames: instances,
-    concurrency,
-    distributionMode,
+    concurrency: strategy.concurrency || 1,
     delayConfig,
+    preferUserBinding,
   });
 
   if (!groupId) {
@@ -152,111 +149,26 @@ async function processCampaignAsync(
     return;
   }
 
-  // Busca dados das instâncias (hash/API keys)
-  console.log(`🔍 Buscando instâncias: ${instances.join(', ')}`);
-  const { data: instanceData, error: instanceError } = await supabaseServiceRole
-    .from('whatsapp_instances')
-    .select('instance_name, hash, status')
-    .eq('user_id', userId)
-    .in('instance_name', instances);
-
-  if (instanceError) {
-    console.error(`❌ Erro ao buscar instâncias:`, instanceError);
-  }
-
-  if (!instanceData || instanceData.length === 0) {
-    console.error(`❌ Nenhuma instância encontrada para a campanha ${campaignId}`);
-    await supabaseServiceRole
-      .from('campaigns')
-      .update({
-        status: 'failed',
-        updated_at: new Date().toISOString(),
-        completed_at: new Date().toISOString(),
-      })
-      .eq('id', campaignId);
-    return;
-  }
-
-  console.log(`📱 Instâncias encontradas: ${instanceData.length}`, instanceData.map(i => ({
-    name: i.instance_name,
-    status: i.status,
-    hasHash: !!i.hash,
-  })));
-
-  // Verifica status em tempo real para cada instância antes de filtrar
-  console.log(`🔄 Verificando status em tempo real das instâncias...`);
-  const instancesWithRealTimeStatus = await Promise.all(
-    instanceData.map(async (inst) => {
-      if (!inst.hash) {
-        return { ...inst, realTimeStatus: inst.status, reason: 'Sem hash/API key' };
-      }
-
-      try {
-        const evolutionData = await evolutionService.getConnectionState(inst.instance_name, inst.hash);
-        const realTimeStatus = evolutionService.extractState(evolutionData);
-        
-        // Atualiza o status no banco se mudou
-        if (realTimeStatus !== inst.status) {
-          console.log(`   📝 Atualizando status de ${inst.instance_name}: ${inst.status} → ${realTimeStatus}`);
-          await supabaseServiceRole
-            .from('whatsapp_instances')
-            .update({
-              status: realTimeStatus,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('user_id', userId)
-            .eq('instance_name', inst.instance_name);
-        }
-
-        return {
-          ...inst,
-          realTimeStatus,
-          reason: realTimeStatus !== 'connected' ? `Status: ${realTimeStatus}` : null,
-        };
-      } catch (error: any) {
-        console.error(`   ⚠️ Erro ao verificar status de ${inst.instance_name}:`, error.message);
-        return {
-          ...inst,
-          realTimeStatus: inst.status,
-          reason: `Erro ao verificar: ${error.message}`,
-        };
-      }
-    })
-  );
-
-  // Filtra apenas instâncias conectadas e com hash (usando status em tempo real)
-  const availableInstances = instancesWithRealTimeStatus.filter(
-    (inst) => inst.realTimeStatus === 'connected' && inst.hash
-  );
-
-  if (availableInstances.length === 0) {
-    console.error(`❌ Nenhuma instância disponível (conectada e com hash) para a campanha ${campaignId}`);
-    console.error(`   Instâncias encontradas mas não disponíveis:`, instancesWithRealTimeStatus.map(i => ({
-      name: i.instance_name,
-      statusBanco: i.status,
-      statusTempoReal: i.realTimeStatus,
-      hasHash: !!i.hash,
-      reason: !i.hash ? 'Sem hash/API key' : i.reason || 'Desconhecido',
-    })));
-    await supabaseServiceRole
-      .from('campaigns')
-      .update({
-        status: 'failed',
-        updated_at: new Date().toISOString(),
-        completed_at: new Date().toISOString(),
-      })
-      .eq('id', campaignId);
-    return;
-  }
-
-  console.log(`✅ Instâncias disponíveis para uso: ${availableInstances.length}`, 
-    availableInstances.map(i => i.instance_name));
-
-  // Mapa de status das instâncias
-  const instanceStatus = new Map<string, { errors: number; banned: boolean }>();
-  availableInstances.forEach((inst) => {
-    instanceStatus.set(inst.instance_name, { errors: 0, banned: false });
+  // Verifica se há instâncias disponíveis usando o balanceador
+  const testInstance = await evolutionBalancer.pickBestEvolutionInstance({
+    userId,
+    preferUserBinding,
   });
+
+  if (!testInstance) {
+    console.error(`❌ Nenhuma instância Evolution disponível no sistema para a campanha ${campaignId}`);
+    await supabaseServiceRole
+      .from('campaigns')
+      .update({
+        status: 'failed',
+        updated_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+      })
+      .eq('id', campaignId);
+    return;
+  }
+
+  console.log(`✅ Sistema de balanceamento ativo. Instâncias disponíveis através do balanceador.`);
 
   // Função para normalizar número de telefone (adiciona 55 se não tiver)
   const normalizePhoneNumber = (phone: string): string => {
@@ -286,33 +198,7 @@ async function processCampaignAsync(
     }
   };
 
-  // Função para selecionar próxima instância
-  const getNextInstance = (): { name: string; hash: string } | null => {
-    // Remove instâncias banidas
-    const activeInstances = availableInstances.filter(
-      (inst) => !instanceStatus.get(inst.instance_name)?.banned
-    );
-
-    if (activeInstances.length === 0) {
-      return null; // Todas as instâncias foram banidas
-    }
-
-    if (distributionMode === 'round_robin') {
-      // Round robin simples (pode ser melhorado com tracking)
-      const index = Math.floor(Math.random() * activeInstances.length);
-      const inst = activeInstances[index];
-      return { name: inst.instance_name, hash: inst.hash! };
-    } else {
-      // Least used (usa a instância com menos erros)
-      const sorted = activeInstances.sort((a, b) => {
-        const aErrors = instanceStatus.get(a.instance_name)?.errors || 0;
-        const bErrors = instanceStatus.get(b.instance_name)?.errors || 0;
-        return aErrors - bErrors;
-      });
-      const inst = sorted[0];
-      return { name: inst.instance_name, hash: inst.hash! };
-    }
-  };
+  // O balanceador já seleciona a melhor instância automaticamente, não precisa mais dessa função
 
   // Processa jobs sequencialmente com delay entre cada um
   // A concorrência é controlada pelo número de instâncias disponíveis
@@ -408,53 +294,6 @@ async function processCampaignAsync(
       break;
     }
 
-    const instance = getNextInstance();
-    
-    if (!instance) {
-      // Todas as instâncias banidas - marca todos os restantes como falha
-      const remaining = jobs.length - i;
-      failed += remaining;
-      await rateLimitService.recordLeadUsage(campaignId, remaining, false);
-      
-      // Marca todos os leads restantes como 'erro' pois não foram processados
-      const remainingJobs = jobs.slice(i);
-      const remainingContactIds = remainingJobs.map(j => j.contactId);
-      
-      if (remainingContactIds.length > 0) {
-        await supabaseServiceRole
-          .from('searches')
-          .update({
-            status: 'erro', // Marca como 'erro' pois não foram processados
-            updated_at: new Date().toISOString(),
-            // Não marca status_add_gp como true pois falharam
-          })
-          .in('id', remainingContactIds);
-      }
-      
-      logDetail('error', `Todas as instâncias foram banidas. ${remaining} jobs restantes marcados como erro.`, {
-        jobNumber,
-        contactId: job.contactId,
-        phone: job.phone,
-        remainingJobs: remaining,
-        remainingContactIds,
-        availableInstances: availableInstances.length,
-        bannedInstances: Array.from(instanceStatus.entries())
-          .filter(([_, status]) => status.banned)
-          .map(([name]) => name),
-        action: 'Status atualizado para "erro" em todos os leads restantes',
-      });
-      break;
-    }
-
-    logDetail('info', `Tentando adicionar lead usando instância`, {
-      jobNumber,
-      contactId: job.contactId,
-      phone: job.phone,
-      instanceName: instance.name,
-      groupId,
-      instanceErrors: instanceStatus.get(instance.name)?.errors || 0,
-    });
-
     try {
       const startTime = Date.now();
       
@@ -471,13 +310,13 @@ async function processCampaignAsync(
         });
       }
       
-      // Adiciona participante ao grupo
-      const result = await evolutionService.addParticipantsToGroup(
-        instance.name,
-        instance.hash,
+      // Usa o balanceador para adicionar lead ao grupo
+      const result = await evolutionBalancer.addLeadToGroup({
+        userId,
         groupId,
-        [normalizedPhone]
-      );
+        leadPhone: normalizedPhone,
+        preferUserBinding,
+      });
 
       const duration = Date.now() - startTime;
 
@@ -499,70 +338,60 @@ async function processCampaignAsync(
           jobNumber,
           contactId: job.contactId,
           phone: job.phone,
-          instanceName: instance.name,
+          instanceUsed: result.instanceUsed?.instance_name || 'N/A',
           groupId,
           duration: `${duration}ms`,
-          added: result.added || 1,
           updateError: updateError?.message || null,
         });
       } else {
         failed++;
         await rateLimitService.recordLeadUsage(campaignId, 1, false);
 
-        // Marca como 'erro' quando falha - não marca como 'added' pois não foi adicionado ao grupo
+        // Se não há instâncias disponíveis, marca todos os restantes como erro
+        if (result.errorType === 'no_instance_available') {
+          const remaining = jobs.length - i;
+          const remainingJobs = jobs.slice(i);
+          const remainingContactIds = remainingJobs.map(j => j.contactId);
+          
+          if (remainingContactIds.length > 0) {
+            await supabaseServiceRole
+              .from('searches')
+              .update({
+                status: 'erro',
+                updated_at: new Date().toISOString(),
+              })
+              .in('id', remainingContactIds);
+          }
+          
+          logDetail('error', `Nenhuma instância disponível. ${remaining} jobs restantes marcados como erro.`, {
+            jobNumber,
+            contactId: job.contactId,
+            phone: job.phone,
+            remainingJobs: remaining,
+            action: 'Status atualizado para "erro" em todos os leads restantes',
+          });
+          break;
+        }
+
+        // Marca como 'erro' quando falha
         const { error: updateError } = await supabaseServiceRole
           .from('searches')
           .update({
-            status: 'erro', // Marca como 'erro' pois falhou ao adicionar
+            status: 'erro',
             updated_at: new Date().toISOString(),
-            // Não marca status_add_gp como true pois falhou
           })
           .eq('id', job.contactId);
-
-        // Atualiza status da instância baseado no erro
-        const status = instanceStatus.get(instance.name);
-        if (status) {
-          status.errors++;
-          
-          // Marca como banida se for connection_closed
-          if (result.errorType === 'connection_closed') {
-            status.banned = true;
-            await rateLimitService.markInstanceError(
-              userId,
-              instance.name,
-              'connection_closed',
-              result.error || 'Connection closed'
-            );
-          } else if (result.errorType === 'rate_limit') {
-            // Suspende temporariamente em caso de rate limit
-            await rateLimitService.markInstanceError(
-              userId,
-              instance.name,
-              'rate_limit',
-              result.error || 'Rate limit'
-            );
-          }
-        }
 
         logDetail('error', `Falha ao adicionar lead ao grupo - Status atualizado para 'erro'`, {
           jobNumber,
           contactId: job.contactId,
           phone: job.phone,
-          instanceName: instance.name,
+          instanceUsed: result.instanceUsed?.instance_name || 'N/A',
           groupId,
           duration: `${duration}ms`,
           errorType: result.errorType || 'unknown',
           error: result.error || 'Erro desconhecido',
-          instanceStatus: {
-            errors: status?.errors || 0,
-            banned: status?.banned || false,
-          },
-          action: result.errorType === 'connection_closed' 
-            ? 'Instância marcada como banida' 
-            : result.errorType === 'rate_limit'
-            ? 'Instância suspensa temporariamente'
-            : 'Erro registrado',
-          statusUpdated: 'erro', // Status marcado como erro pois não foi adicionado
+          statusUpdated: 'erro',
           updateError: updateError?.message || null,
         });
       }
@@ -570,13 +399,12 @@ async function processCampaignAsync(
       failed++;
       await rateLimitService.recordLeadUsage(campaignId, 1, false);
       
-      // Marca como 'erro' em caso de exceção - não foi adicionado ao grupo
+      // Marca como 'erro' em caso de exceção
       const { error: updateError } = await supabaseServiceRole
         .from('searches')
         .update({
-          status: 'erro', // Marca como 'erro' pois falhou
+          status: 'erro',
           updated_at: new Date().toISOString(),
-          // Não marca status_add_gp como true pois falhou
         })
         .eq('id', job.contactId);
       
@@ -584,13 +412,12 @@ async function processCampaignAsync(
         jobNumber,
         contactId: job.contactId,
         phone: job.phone,
-        instanceName: instance?.name || 'N/A',
         groupId,
         errorType: 'exception',
         errorMessage: error?.message || String(error),
         errorStack: error?.stack || null,
         errorName: error?.name || 'UnknownError',
-        statusUpdated: 'erro', // Status marcado como erro pois não foi adicionado
+        statusUpdated: 'erro',
         updateError: updateError?.message || null,
       });
     }
@@ -605,11 +432,6 @@ async function processCampaignAsync(
         total: jobs.length,
         progress: `${processed + failed}/${jobs.length} (${progressPercentage}%)`,
         successRate: jobs.length > 0 ? `${Math.round((processed / (processed + failed || 1)) * 100)}%` : '0%',
-        instanceStatus: Array.from(instanceStatus.entries()).map(([name, status]) => ({
-          name,
-          errors: status.errors,
-          banned: status.banned,
-        })),
       });
 
       await supabaseServiceRole
@@ -643,19 +465,11 @@ async function processCampaignAsync(
       processed,
       failed,
       successRate: `${successRate}%`,
-      instanceStatus: Array.from(instanceStatus.entries()).map(([name, status]) => ({
-        name,
-        errors: status.errors,
-        banned: status.banned,
-      })),
       summary: {
         total: jobs.length,
         success: processed,
         failed,
         successRate: `${successRate}%`,
-        bannedInstances: Array.from(instanceStatus.entries())
-          .filter(([_, status]) => status.banned)
-          .map(([name]) => name),
       },
     }
   );

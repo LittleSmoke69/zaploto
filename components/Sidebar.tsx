@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
@@ -9,12 +9,13 @@ import {
   Rocket,
   Users,
   Plus,
-  Menu,
   X,
   ChevronLeft,
   ChevronRight,
   Shield,
+  LogOut,
 } from 'lucide-react';
+import { useSidebar } from '@/contexts/SidebarContext';
 
 interface SidebarProps {
   onSignOut?: () => void;
@@ -22,8 +23,7 @@ interface SidebarProps {
 
 const Sidebar: React.FC<SidebarProps> = ({ onSignOut }) => {
   const pathname = usePathname();
-  const [isMobileOpen, setIsMobileOpen] = useState(false);
-  const [isCollapsed, setIsCollapsed] = useState(true); // Por padrão colapsada
+  const { isMobileOpen, setIsMobileOpen, isCollapsed, setIsCollapsed } = useSidebar();
   const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
@@ -105,19 +105,6 @@ const Sidebar: React.FC<SidebarProps> = ({ onSignOut }) => {
 
   return (
     <>
-      {/* Mobile Menu Button */}
-      <button
-        onClick={() => setIsMobileOpen(!isMobileOpen)}
-        className="lg:hidden fixed top-4 left-4 z-50 p-2 bg-white rounded-lg shadow-md hover:bg-gray-100 transition"
-        aria-label="Toggle menu"
-      >
-        {isMobileOpen ? (
-          <X className="w-6 h-6 text-gray-700" />
-        ) : (
-          <Menu className="w-6 h-6 text-gray-700" />
-        )}
-      </button>
-
       {/* Overlay for mobile */}
       {isMobileOpen && (
         <div
@@ -133,7 +120,9 @@ const Sidebar: React.FC<SidebarProps> = ({ onSignOut }) => {
           transform transition-all duration-300 ease-in-out
           ${isMobileOpen ? 'translate-x-0' : '-translate-x-full'}
           lg:translate-x-0
-          ${isMobileOpen ? 'w-64' : isCollapsed ? 'w-20' : 'w-64'}
+          w-64
+          ${!isMobileOpen && isCollapsed ? 'lg:w-20' : 'lg:w-64'}
+          flex flex-col
         `}
         data-collapsed={isCollapsed}
       >
@@ -164,34 +153,59 @@ const Sidebar: React.FC<SidebarProps> = ({ onSignOut }) => {
         </div>
 
         {/* Navigation */}
-        <nav className="p-2 space-y-1">
-          {menuItems.map((item) => {
-            const Icon = item.icon;
-            const active = isActive(item.href);
-            
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={() => setIsMobileOpen(false)}
+        <nav className="p-2 space-y-1 flex-1 flex flex-col">
+          <div className="flex-1">
+            {menuItems.map((item) => {
+              const Icon = item.icon;
+              const active = isActive(item.href);
+              
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  onClick={() => setIsMobileOpen(false)}
+                  className={`
+                    w-full flex items-center gap-3 px-3 py-3 rounded-lg transition-all duration-200
+                    ${isMobileOpen ? '' : isCollapsed ? 'justify-center' : ''}
+                    ${
+                      active
+                        ? 'bg-emerald-500 text-white shadow-md'
+                        : 'text-gray-700 hover:bg-gray-100'
+                    }
+                  `}
+                  title={isMobileOpen ? undefined : isCollapsed ? item.label : undefined}
+                >
+                  <Icon className="w-5 h-5 flex-shrink-0" />
+                  {(isMobileOpen || !isCollapsed) && (
+                    <span className="font-medium whitespace-nowrap">{item.label}</span>
+                  )}
+                </Link>
+              );
+            })}
+          </div>
+          
+          {/* Botão Sair no final da sidebar */}
+          {onSignOut && (
+            <div className="mt-auto pt-4 pb-2 border-t border-gray-200">
+              <button
+                onClick={() => {
+                  setIsMobileOpen(false);
+                  onSignOut();
+                }}
                 className={`
                   w-full flex items-center gap-3 px-3 py-3 rounded-lg transition-all duration-200
                   ${isMobileOpen ? '' : isCollapsed ? 'justify-center' : ''}
-                  ${
-                    active
-                      ? 'bg-emerald-500 text-white shadow-md'
-                      : 'text-gray-700 hover:bg-gray-100'
-                  }
+                  text-white bg-red-600 hover:bg-red-700 shadow-md
                 `}
-                title={isMobileOpen ? undefined : isCollapsed ? item.label : undefined}
+                title={isMobileOpen ? undefined : isCollapsed ? 'Sair' : undefined}
               >
-                <Icon className="w-5 h-5 flex-shrink-0" />
+                <LogOut className="w-5 h-5 flex-shrink-0" />
                 {(isMobileOpen || !isCollapsed) && (
-                  <span className="font-medium whitespace-nowrap">{item.label}</span>
+                  <span className="font-medium whitespace-nowrap">Sair</span>
                 )}
-              </Link>
-            );
-          })}
+              </button>
+            </div>
+          )}
         </nav>
       </aside>
     </>

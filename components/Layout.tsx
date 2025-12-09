@@ -2,6 +2,9 @@
 
 import React, { useEffect, useState } from 'react';
 import Sidebar from './Sidebar';
+import { useSidebar } from '@/contexts/SidebarContext';
+import { Menu, X } from 'lucide-react';
+import TutorialInitializer from './Tutorial/TutorialInitializer';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -10,6 +13,18 @@ interface LayoutProps {
 
 const Layout: React.FC<LayoutProps> = ({ children, onSignOut }) => {
   const [sidebarWidth, setSidebarWidth] = useState(80);
+  const { isCollapsed, setIsCollapsed, isMobileOpen, setIsMobileOpen } = useSidebar();
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 1024);
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   useEffect(() => {
     const updateSidebarWidth = () => {
@@ -43,13 +58,16 @@ const Layout: React.FC<LayoutProps> = ({ children, onSignOut }) => {
     <div className="min-h-screen bg-gray-50 flex">
       <Sidebar onSignOut={onSignOut} />
       <main
-        className="flex-1 transition-all duration-300 min-h-screen"
-        style={{ marginLeft: `${sidebarWidth}px` }}
+        className="flex-1 transition-all duration-300 min-h-screen w-full"
+        style={{ 
+          marginLeft: isMobile ? '0px' : `${sidebarWidth}px` 
+        }}
       >
-        <div className="p-4 sm:p-6 lg:p-8">
+        <div className="p-4 sm:p-6 lg:p-8 w-full overflow-x-hidden">
           {children}
         </div>
       </main>
+      <TutorialInitializer />
     </div>
   );
 };

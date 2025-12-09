@@ -5,6 +5,7 @@ import { useRequireAuth } from '@/utils/useRequireAuth';
 import { useRouter } from 'next/navigation';
 import Layout from '@/components/Layout';
 import Pagination from '@/components/Admin/Pagination';
+import { useSidebar } from '@/contexts/SidebarContext';
 import {
   LineChart,
   Line,
@@ -30,12 +31,12 @@ import {
   RefreshCw,
   Calendar,
   ChevronDown,
-  LogOut,
   Plus,
   Edit,
   Trash2,
   Save,
   X,
+  Menu,
 } from 'lucide-react';
 
 interface AdminStats {
@@ -134,6 +135,7 @@ interface UserWithApis {
 const AdminDashboard = () => {
   const { checking } = useRequireAuth();
   const router = useRouter();
+  const { isCollapsed, setIsCollapsed, isMobileOpen, setIsMobileOpen } = useSidebar();
   const [userId, setUserId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -141,6 +143,10 @@ const AdminDashboard = () => {
   const [users, setUsers] = useState<User[]>([]);
   const [selectedUser, setSelectedUser] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<'overview' | 'users' | 'campaigns' | 'settings'>('overview');
+  const [instances, setInstances] = useState<any[]>([]);
+  const [groups, setGroups] = useState<{ dbGroups: any[]; evolutionGroups: any[] }>({ dbGroups: [], evolutionGroups: [] });
+  const [loadingInstances, setLoadingInstances] = useState(false);
+  const [loadingGroups, setLoadingGroups] = useState(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -218,8 +224,49 @@ const AdminDashboard = () => {
         const usersData = await usersRes.json();
         setUsers(usersData.data || []);
       }
+
+      // Carrega instâncias e grupos
+      loadInstances();
+      loadGroups();
     } catch (error) {
       console.error('Erro ao carregar dados:', error);
+    }
+  };
+
+  const loadInstances = async () => {
+    setLoadingInstances(true);
+    try {
+      const res = await fetch('/api/admin/evolution/instances', {
+        headers: { 'X-User-Id': userId! },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setInstances(data.data || []);
+      }
+    } catch (error) {
+      console.error('Erro ao carregar instâncias:', error);
+    } finally {
+      setLoadingInstances(false);
+    }
+  };
+
+  const loadGroups = async () => {
+    setLoadingGroups(true);
+    try {
+      const res = await fetch('/api/admin/evolution/groups', {
+        headers: { 'X-User-Id': userId! },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setGroups({
+          dbGroups: data.data?.dbGroups || [],
+          evolutionGroups: data.data?.evolutionGroups || [],
+        });
+      }
+    } catch (error) {
+      console.error('Erro ao carregar grupos:', error);
+    } finally {
+      setLoadingGroups(false);
     }
   };
 
@@ -264,83 +311,86 @@ const AdminDashboard = () => {
 
   return (
     <Layout onSignOut={handleSignOut}>
-      <div className="space-y-8">
-        <div className="flex justify-between items-start">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-800 mb-2">Painel Administrativo</h1>
-            <p className="text-gray-600">Gerenciamento completo do sistema</p>
+      <div className="space-y-8 w-full">
+        <div className="flex items-center justify-between gap-4 w-full">
+          <div className="flex-1">
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">Painel Administrativo</h1>
+            <p className="text-sm sm:text-base text-gray-600">Gerenciamento completo do sistema</p>
           </div>
-          <div className="flex items-center gap-4">
-            <button className="flex items-center gap-2 px-4 py-2 bg-white rounded-lg shadow border border-gray-200 hover:bg-gray-50">
+          <div className="flex items-center gap-2 sm:gap-4 flex-shrink-0">
+            <button className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-white rounded-lg shadow border border-gray-200 hover:bg-gray-50 text-sm sm:text-base">
               <Calendar className="w-4 h-4" />
-              <span>Últimos 7 dias</span>
+              <span className="hidden sm:inline">Últimos 7 dias</span>
+              <span className="sm:hidden">7 dias</span>
               <ChevronDown className="w-4 h-4" />
             </button>
-            <button
-              onClick={handleSignOut}
-              className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition shadow-md hover:shadow-lg"
-              title="Sair do painel admin"
-            >
-              <LogOut className="w-5 h-5" />
-              <span>Sair</span>
-            </button>
+            {/* Botão Toggle da Sidebar - Apenas no mobile, no topo direito */}
+            <div className="lg:hidden">
+              <button
+                onClick={() => setIsMobileOpen(!isMobileOpen)}
+                className="flex items-center justify-center w-10 h-10 rounded-lg hover:bg-gray-100 transition text-gray-600 shadow-md bg-white"
+                aria-label="Toggle sidebar"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+            </div>
           </div>
         </div>
 
-        <div className="bg-white rounded-xl shadow-md p-2 flex gap-2">
+        <div className="bg-white rounded-xl shadow-md p-2 flex flex-wrap gap-2">
           <button
             onClick={() => setActiveSection('overview')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition ${
+            className={`flex items-center gap-2 px-3 sm:px-4 py-2 rounded-lg transition text-sm sm:text-base ${
               activeSection === 'overview'
                 ? 'bg-emerald-600 text-white'
                 : 'text-gray-700 hover:bg-gray-100'
             }`}
           >
-            <LayoutDashboard className="w-5 h-5" />
+            <LayoutDashboard className="w-4 h-4 sm:w-5 sm:h-5" />
             <span>Dashboard</span>
           </button>
 
           <button
             onClick={() => setActiveSection('users')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition ${
+            className={`flex items-center gap-2 px-3 sm:px-4 py-2 rounded-lg transition text-sm sm:text-base ${
               activeSection === 'users'
                 ? 'bg-emerald-600 text-white'
                 : 'text-gray-700 hover:bg-gray-100'
             }`}
           >
-            <Users className="w-5 h-5" />
+            <Users className="w-4 h-4 sm:w-5 sm:h-5" />
             <span>Usuários</span>
           </button>
 
           <button
             onClick={() => setActiveSection('campaigns')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition ${
+            className={`flex items-center gap-2 px-3 sm:px-4 py-2 rounded-lg transition text-sm sm:text-base ${
               activeSection === 'campaigns'
                 ? 'bg-emerald-600 text-white'
                 : 'text-gray-700 hover:bg-gray-100'
             }`}
           >
-            <BarChart3 className="w-5 h-5" />
+            <BarChart3 className="w-4 h-4 sm:w-5 sm:h-5" />
             <span>Campanhas</span>
           </button>
 
           <button
             onClick={() => setActiveSection('settings')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition ${
+            className={`flex items-center gap-2 px-3 sm:px-4 py-2 rounded-lg transition text-sm sm:text-base ${
               activeSection === 'settings'
                 ? 'bg-emerald-600 text-white'
                 : 'text-gray-700 hover:bg-gray-100'
             }`}
           >
-            <Settings className="w-5 h-5" />
+            <Settings className="w-4 h-4 sm:w-5 sm:h-5" />
             <span>Configurações</span>
           </button>
         </div>
 
         <div>
           {activeSection === 'overview' && stats && (
-            <div className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+            <div className="space-y-6 w-full">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4 w-full">
                 <MetricCard
                   title="Mensagens Enviadas"
                   value={stats.contacts.sent}
@@ -379,12 +429,12 @@ const AdminDashboard = () => {
                 />
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div className="lg:col-span-2 bg-white rounded-xl shadow p-6">
-                  <h2 className="text-xl font-semibold text-gray-800 mb-4">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 w-full">
+                <div className="lg:col-span-2 bg-white rounded-xl shadow p-4 sm:p-6">
+                  <h2 className="text-lg sm:text-xl font-semibold text-gray-800 mb-4">
                     Mensagens Enviadas e Adição aos Grupos
                   </h2>
-                  <div className="h-64">
+                  <div className="h-48 sm:h-64">
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart data={stats.chartData || []} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -433,12 +483,12 @@ const AdminDashboard = () => {
                   </div>
                 </div>
 
-                <div className="bg-white rounded-xl shadow p-6">
-                  <h2 className="text-xl font-semibold text-gray-800 mb-4">
+                <div className="bg-white rounded-xl shadow p-4 sm:p-6">
+                  <h2 className="text-lg sm:text-xl font-semibold text-gray-800 mb-4">
                     Sucesso de Adição aos Grupos
                   </h2>
                   <div className="text-center">
-                    <div className="text-5xl font-bold text-emerald-600 mb-4">
+                    <div className="text-4xl sm:text-5xl font-bold text-emerald-600 mb-4">
                       {stats.campaigns.successRate}%
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-4">
@@ -451,36 +501,113 @@ const AdminDashboard = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div className="bg-white rounded-xl shadow p-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 w-full">
+                <div className="bg-white rounded-xl shadow p-4 sm:p-6">
                   <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-xl font-semibold text-gray-800">Lista de Instâncias</h2>
-                    <button className="text-emerald-600 text-sm font-medium">Ver todas</button>
+                    <h2 className="text-lg sm:text-xl font-semibold text-gray-800">Lista de Instâncias</h2>
+                    <button 
+                      onClick={loadInstances}
+                      className="text-emerald-600 text-sm font-medium hover:text-emerald-700"
+                    >
+                      Ver todas
+                    </button>
                   </div>
-                  <div className="space-y-2">
-                    {Array.from({ length: Math.min(5, stats.instances.total) }, (_, i) => (
-                      <div key={i} className="p-3 bg-gray-50 rounded-lg">
-                        <div className="font-medium text-gray-800">Instância {String(i + 1).padStart(2, '0')}</div>
-                        <div className="text-sm text-gray-500">XXXXXX</div>
+                  {loadingInstances ? (
+                    <div className="text-center py-4">
+                      <RefreshCw className="w-5 h-5 animate-spin text-emerald-600 mx-auto" />
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {instances.length === 0 ? (
+                        <p className="text-sm text-gray-500">Nenhuma instância cadastrada</p>
+                      ) : (
+                        instances.slice(0, 5).map((inst, i) => (
+                          <div key={inst.id || i} className="p-3 bg-gray-50 rounded-lg">
+                            <div className="font-medium text-gray-800">{inst.instance_name}</div>
+                            <div className="text-sm text-gray-500">
+                              {inst.phone_number || 'N/A'} • {inst.status}
+                              {inst.evolution_api && ` • ${inst.evolution_api.name}`}
+                            </div>
+                            {inst.sent_today > 0 && (
+                              <div className="text-xs text-gray-400 mt-1">
+                                {inst.sent_today} enviados hoje
+                              </div>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-white rounded-xl shadow p-4 sm:p-6">
+                  <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-lg sm:text-xl font-semibold text-gray-800">Grupos Salvos no Banco</h2>
+                    <button 
+                      onClick={loadGroups}
+                      className="text-emerald-600 text-sm font-medium hover:text-emerald-700"
+                    >
+                      Ver todas
+                    </button>
+                  </div>
+                  {loadingGroups ? (
+                    <div className="text-center py-4">
+                      <RefreshCw className="w-5 h-5 animate-spin text-emerald-600 mx-auto" />
+                    </div>
+                  ) : (
+                    <>
+                      <div className="text-3xl font-bold text-gray-800 mb-2">
+                        {groups.dbGroups.length}
                       </div>
-                    ))}
-                  </div>
+                      {groups.dbGroups.length > 0 && (
+                        <div className="text-sm text-gray-500">
+                          {groups.dbGroups.slice(0, 3).map((g, i) => (
+                            <div key={g.id || i} className="truncate">
+                              {g.group_subject || g.group_id}
+                            </div>
+                          ))}
+                          {groups.dbGroups.length > 3 && (
+                            <div className="text-gray-400">+{groups.dbGroups.length - 3} mais...</div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
 
-                <div className="bg-white rounded-xl shadow p-6">
+                <div className="bg-white rounded-xl shadow p-4 sm:p-6">
                   <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-xl font-semibold text-gray-800">Grupos Salvos no Banco</h2>
-                    <button className="text-emerald-600 text-sm font-medium">Ver todas</button>
+                    <h2 className="text-lg sm:text-xl font-semibold text-gray-800">Grupos da API (Evolution)</h2>
+                    <button 
+                      onClick={loadGroups}
+                      className="text-emerald-600 text-sm font-medium hover:text-emerald-700"
+                    >
+                      Ver todas
+                    </button>
                   </div>
-                  <div className="text-3xl font-bold text-gray-800">{stats.overview.totalGroups}</div>
-                </div>
-
-                <div className="bg-white rounded-xl shadow p-6">
-                  <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-xl font-semibold text-gray-800">Grupos da API (Evolution)</h2>
-                    <button className="text-emerald-600 text-sm font-medium">Ver todas</button>
-                  </div>
-                  <div className="text-3xl font-bold text-gray-800">{stats.overview.totalGroups}</div>
+                  {loadingGroups ? (
+                    <div className="text-center py-4">
+                      <RefreshCw className="w-5 h-5 animate-spin text-emerald-600 mx-auto" />
+                    </div>
+                  ) : (
+                    <>
+                      <div className="text-3xl font-bold text-gray-800 mb-2">
+                        {groups.evolutionGroups.length}
+                      </div>
+                      {groups.evolutionGroups.length > 0 && (
+                        <div className="text-sm text-gray-500">
+                          {groups.evolutionGroups.slice(0, 3).map((g, i) => (
+                            <div key={g.id || i} className="truncate">
+                              {g.subject || g.id}
+                            </div>
+                          ))}
+                          {groups.evolutionGroups.length > 3 && (
+                            <div className="text-gray-400">+{groups.evolutionGroups.length - 3} mais...</div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -500,12 +627,12 @@ const AdminDashboard = () => {
 };
 
 const MetricCard = ({ title, value, icon, bgColor }: any) => (
-  <div className="bg-white rounded-xl shadow p-6">
-    <div className="flex items-center justify-between mb-4">
-      <div className={`${bgColor} p-3 rounded-lg text-white`}>{icon}</div>
+  <div className="bg-white rounded-xl shadow p-4 sm:p-6">
+    <div className="flex items-center justify-between mb-3 sm:mb-4">
+      <div className={`${bgColor} p-2 sm:p-3 rounded-lg text-white`}>{icon}</div>
     </div>
-    <div className="text-2xl font-bold text-gray-800 mb-1">{value}</div>
-    <div className="text-sm text-gray-600">{title}</div>
+    <div className="text-xl sm:text-2xl font-bold text-gray-800 mb-1">{value}</div>
+    <div className="text-xs sm:text-sm text-gray-600">{title}</div>
   </div>
 );
 
@@ -576,68 +703,68 @@ const UsersSection = ({
 
   return (
     <div className="bg-white rounded-xl shadow overflow-hidden">
-      <div className="p-6">
-        <h2 className="text-2xl font-semibold text-gray-800 mb-6">Gerenciar Usuários</h2>
-        <div className="overflow-x-auto">
-          <table className="w-full">
+      <div className="p-4 sm:p-6">
+        <h2 className="text-xl sm:text-2xl font-semibold text-gray-800 mb-4 sm:mb-6">Gerenciar Usuários</h2>
+        <div className="overflow-x-auto -mx-4 sm:mx-0">
+          <table className="w-full min-w-[640px]">
             <thead>
               <tr className="border-b border-gray-200">
-                <th className="text-left p-4 text-gray-700">Usuário</th>
-                <th className="text-left p-4 text-gray-700">Leads/Dia</th>
-                <th className="text-left p-4 text-gray-700">Instâncias</th>
-                <th className="text-left p-4 text-gray-700">Campanhas</th>
-                <th className="text-left p-4 text-gray-700">Contatos</th>
-                <th className="text-left p-4 text-gray-700">Ações</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">Usuário</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">Leads/Dia</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">Instâncias</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">Campanhas</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">Contatos</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">Ações</th>
               </tr>
             </thead>
             <tbody>
               {paginatedUsers.map((user: User) => (
                 <tr key={user.id} className="border-b border-gray-100 hover:bg-gray-50">
-                  <td className="p-4">
+                  <td className="p-3 sm:p-4">
                     <div>
-                      <div className="font-medium text-gray-800">{user.email}</div>
-                      <div className="text-sm text-gray-500">{user.full_name || 'Sem nome'}</div>
+                      <div className="font-medium text-gray-800 text-sm sm:text-base">{user.email}</div>
+                      <div className="text-xs sm:text-sm text-gray-500">{user.full_name || 'Sem nome'}</div>
                     </div>
                   </td>
-                  <td className="p-4">
+                  <td className="p-3 sm:p-4">
                     {editingUser === user.id ? (
                       <input
                         type="number"
                         value={maxLeads}
                         onChange={(e) => setMaxLeads(Number(e.target.value))}
-                        className="w-20 px-2 py-1 border rounded text-black"
+                        className="w-16 sm:w-20 px-2 py-1 border rounded text-black text-sm"
                       />
                     ) : (
-                      <span>{user.settings.max_leads_per_day}</span>
+                      <span className="text-sm sm:text-base">{user.settings.max_leads_per_day}</span>
                     )}
                   </td>
-                  <td className="p-4">
+                  <td className="p-3 sm:p-4">
                     {editingUser === user.id ? (
                       <input
                         type="number"
                         value={maxInstances}
                         onChange={(e) => setMaxInstances(Number(e.target.value))}
-                        className="w-20 px-2 py-1 border rounded text-black"
+                        className="w-16 sm:w-20 px-2 py-1 border rounded text-black text-sm"
                       />
                     ) : (
-                      <span>{user.settings.max_instances}</span>
+                      <span className="text-sm sm:text-base">{user.settings.max_instances}</span>
                     )}
                   </td>
-                  <td className="p-4">{user.stats.campaigns}</td>
-                  <td className="p-4">{user.stats.contacts}</td>
-                  <td className="p-4">
+                  <td className="p-3 sm:p-4 text-sm sm:text-base">{user.stats.campaigns}</td>
+                  <td className="p-3 sm:p-4 text-sm sm:text-base">{user.stats.contacts}</td>
+                  <td className="p-3 sm:p-4">
                     {editingUser === user.id ? (
-                      <div className="flex gap-2">
+                      <div className="flex flex-col sm:flex-row gap-2">
                         <button
                           onClick={() => handleSave(user.id)}
                           disabled={saving}
-                          className="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50"
+                          className="px-3 sm:px-4 py-1.5 sm:py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50 text-xs sm:text-sm"
                         >
                           {saving ? 'Salvando...' : 'Salvar'}
                         </button>
                         <button
                           onClick={handleCancel}
-                          className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+                          className="px-3 sm:px-4 py-1.5 sm:py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-xs sm:text-sm"
                         >
                           Cancelar
                         </button>
@@ -645,7 +772,7 @@ const UsersSection = ({
                     ) : (
                       <button
                         onClick={() => handleEdit(user)}
-                        className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300"
+                        className="px-3 sm:px-4 py-1.5 sm:py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 text-xs sm:text-sm"
                       >
                         Editar
                       </button>
@@ -712,28 +839,28 @@ const CampaignsSection = ({ userId }: { userId: string | null }) => {
 
   return (
     <div className="bg-white rounded-xl shadow overflow-hidden">
-      <div className="p-6">
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-semibold text-gray-800">Todas as Campanhas</h2>
+      <div className="p-4 sm:p-6">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4 sm:mb-6">
+          <h2 className="text-xl sm:text-2xl font-semibold text-gray-800">Todas as Campanhas</h2>
           <button
             onClick={loadCampaigns}
-            className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 flex items-center gap-2"
+            className="px-3 sm:px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 flex items-center gap-2 text-sm sm:text-base"
           >
             <RefreshCw className="w-4 h-4" />
             Atualizar
           </button>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full">
+        <div className="overflow-x-auto -mx-4 sm:mx-0">
+          <table className="w-full min-w-[800px]">
             <thead>
               <tr className="border-b border-gray-200">
-                <th className="text-left p-4 text-gray-700">ID</th>
-                <th className="text-left p-4 text-gray-700">Usuário</th>
-                <th className="text-left p-4 text-gray-700">Grupo</th>
-                <th className="text-left p-4 text-gray-700">Status</th>
-                <th className="text-left p-4 text-gray-700">Processados</th>
-                <th className="text-left p-4 text-gray-700">Falhas</th>
-                <th className="text-left p-4 text-gray-700">Criada em</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">ID</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">Usuário</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">Grupo</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">Status</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">Processados</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">Falhas</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">Criada em</th>
               </tr>
             </thead>
             <tbody>
@@ -746,10 +873,10 @@ const CampaignsSection = ({ userId }: { userId: string | null }) => {
               ) : (
                 paginatedCampaigns.map((campaign) => (
                   <tr key={campaign.id} className="border-b border-gray-100 hover:bg-gray-50">
-                    <td className="p-4 text-sm text-gray-600">{campaign.id.substring(0, 8)}...</td>
-                    <td className="p-4">{campaign.profiles?.email || 'N/A'}</td>
-                    <td className="p-4">{campaign.group_subject || campaign.group_id}</td>
-                    <td className="p-4">
+                    <td className="p-3 sm:p-4 text-xs sm:text-sm text-gray-600">{campaign.id.substring(0, 8)}...</td>
+                    <td className="p-3 sm:p-4 text-sm sm:text-base">{campaign.profiles?.email || 'N/A'}</td>
+                    <td className="p-3 sm:p-4 text-sm sm:text-base">{campaign.group_subject || campaign.group_id}</td>
+                    <td className="p-3 sm:p-4">
                       <span
                         className={`px-2 py-1 rounded text-xs ${
                           campaign.status === 'running'
@@ -766,9 +893,9 @@ const CampaignsSection = ({ userId }: { userId: string | null }) => {
                         {campaign.status}
                       </span>
                     </td>
-                    <td className="p-4">{campaign.processed_contacts}</td>
-                    <td className="p-4">{campaign.failed_contacts}</td>
-                    <td className="p-4 text-sm text-gray-600">
+                    <td className="p-3 sm:p-4 text-sm sm:text-base">{campaign.processed_contacts}</td>
+                    <td className="p-3 sm:p-4 text-sm sm:text-base">{campaign.failed_contacts}</td>
+                    <td className="p-3 sm:p-4 text-xs sm:text-sm text-gray-600">
                       {new Date(campaign.created_at).toLocaleDateString()}
                     </td>
                   </tr>
@@ -984,32 +1111,32 @@ const SettingsSection = () => {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white rounded-xl shadow p-6">
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-semibold text-gray-800">APIs Evolution</h2>
+    <div className="space-y-4 sm:space-y-6">
+      <div className="bg-white rounded-xl shadow p-4 sm:p-6">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4 sm:mb-6">
+          <h2 className="text-xl sm:text-2xl font-semibold text-gray-800">APIs Evolution</h2>
           <button
             onClick={() => {
               setEditingApi(null);
               setFormData({ name: '', base_url: '', api_key: '', description: '', is_active: true });
               setShowAddModal(true);
             }}
-            className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+            className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm sm:text-base w-full sm:w-auto"
           >
-            <Plus className="w-5 h-5" />
+            <Plus className="w-4 h-4 sm:w-5 sm:h-5" />
             Adicionar API
           </button>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full">
+        <div className="overflow-x-auto -mx-4 sm:mx-0">
+          <table className="w-full min-w-[600px]">
             <thead>
               <tr className="border-b border-gray-200">
-                <th className="text-left p-4 text-gray-700">Nome</th>
-                <th className="text-left p-4 text-gray-700">URL Base</th>
-                <th className="text-left p-4 text-gray-700">Status</th>
-                <th className="text-left p-4 text-gray-700">Usuários</th>
-                <th className="text-left p-4 text-gray-700">Ações</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">Nome</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">URL Base</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">Status</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">Usuários</th>
+                <th className="text-left p-3 sm:p-4 text-gray-700 text-sm sm:text-base">Ações</th>
               </tr>
             </thead>
             <tbody>
@@ -1022,14 +1149,14 @@ const SettingsSection = () => {
               ) : (
                 apis.map((api) => (
                   <tr key={api.id} className="border-b border-gray-100 hover:bg-gray-50">
-                    <td className="p-4">
-                      <div className="font-medium text-gray-800">{api.name}</div>
+                    <td className="p-3 sm:p-4">
+                      <div className="font-medium text-gray-800 text-sm sm:text-base">{api.name}</div>
                       {api.description && (
-                        <div className="text-sm text-gray-500">{api.description}</div>
+                        <div className="text-xs sm:text-sm text-gray-500">{api.description}</div>
                       )}
                     </td>
-                    <td className="p-4 text-sm text-gray-600">{api.base_url}</td>
-                    <td className="p-4">
+                    <td className="p-3 sm:p-4 text-xs sm:text-sm text-gray-600 break-all">{api.base_url}</td>
+                    <td className="p-3 sm:p-4">
                       <span
                         className={`px-2 py-1 rounded text-xs ${
                           api.is_active
@@ -1040,8 +1167,8 @@ const SettingsSection = () => {
                         {api.is_active ? 'Ativa' : 'Inativa'}
                       </span>
                     </td>
-                    <td className="p-4">{api.user_count}</td>
-                    <td className="p-4">
+                    <td className="p-3 sm:p-4 text-sm sm:text-base">{api.user_count}</td>
+                    <td className="p-3 sm:p-4">
                       <div className="flex gap-2">
                         <button
                           onClick={() => handleEdit(api)}
@@ -1067,18 +1194,18 @@ const SettingsSection = () => {
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow p-6">
-        <h2 className="text-2xl font-semibold text-gray-800 mb-6">Atribuir Usuários às APIs</h2>
+      <div className="bg-white rounded-xl shadow p-4 sm:p-6">
+        <h2 className="text-xl sm:text-2xl font-semibold text-gray-800 mb-4 sm:mb-6">Atribuir Usuários às APIs</h2>
         <div className="space-y-4">
           {usersWithApis.map((user) => (
-            <div key={user.id} className="border border-gray-200 rounded-lg p-4">
-              <div className="flex justify-between items-start mb-3">
-                <div>
-                  <div className="font-medium text-gray-800">{user.email}</div>
-                  <div className="text-sm text-gray-500">{user.full_name || 'Sem nome'}</div>
+            <div key={user.id} className="border border-gray-200 rounded-lg p-3 sm:p-4">
+              <div className="flex flex-col sm:flex-row justify-between items-start gap-3 mb-3">
+                <div className="flex-1">
+                  <div className="font-medium text-gray-800 text-sm sm:text-base">{user.email}</div>
+                  <div className="text-xs sm:text-sm text-gray-500">{user.full_name || 'Sem nome'}</div>
                 </div>
                 <select
-                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm text-black"
+                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm text-black w-full sm:w-auto"
                   value={user.evolution_apis.find(ua => ua.is_default)?.evolution_apis?.id || ''}
                   onChange={async (e) => {
                     const apiId = e.target.value;
@@ -1127,10 +1254,10 @@ const SettingsSection = () => {
       </div>
 
       {showAddModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-lg p-6 max-w-2xl w-full mx-4">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-xl font-semibold text-gray-800">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-lg p-4 sm:p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-4 sm:mb-6">
+              <h3 className="text-lg sm:text-xl font-semibold text-gray-800">
                 {editingApi ? 'Editar API Evolution' : 'Adicionar API Evolution'}
               </h3>
               <button
@@ -1140,7 +1267,7 @@ const SettingsSection = () => {
                 }}
                 className="text-gray-400 hover:text-gray-600"
               >
-                <X className="w-6 h-6" />
+                <X className="w-5 h-5 sm:w-6 sm:h-6" />
               </button>
             </div>
 
@@ -1210,20 +1337,20 @@ const SettingsSection = () => {
                 </label>
               </div>
 
-              <div className="flex justify-end gap-3 pt-4">
+              <div className="flex flex-col sm:flex-row justify-end gap-3 pt-4">
                 <button
                   type="button"
                   onClick={() => {
                     setShowAddModal(false);
                     setEditingApi(null);
                   }}
-                  className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+                  className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 text-sm sm:text-base"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 flex items-center gap-2"
+                  className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 flex items-center justify-center gap-2 text-sm sm:text-base"
                 >
                   <Save className="w-4 h-4" />
                   {editingApi ? 'Salvar Alterações' : 'Criar API'}

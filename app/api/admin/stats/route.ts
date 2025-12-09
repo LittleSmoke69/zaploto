@@ -36,14 +36,16 @@ export async function GET(req: NextRequest) {
       supabaseServiceRole.from('profiles').select('id', { count: 'exact', head: true }),
       supabaseServiceRole.from('campaigns').select('id', { count: 'exact', head: true }),
       supabaseServiceRole.from('searches').select('id', { count: 'exact', head: true }),
-      supabaseServiceRole.from('whatsapp_instances').select('id', { count: 'exact', head: true }),
+      // Usa a nova tabela evolution_instances para contagem
+      supabaseServiceRole.from('evolution_instances').select('id', { count: 'exact', head: true }),
       supabaseServiceRole.from('whatsapp_groups').select('id', { count: 'exact', head: true }),
       supabaseServiceRole
         .from('campaigns')
         .select('status, processed_contacts, failed_contacts, total_contacts'),
+      // Busca status das instâncias do novo sistema
       supabaseServiceRole
-        .from('whatsapp_instances')
-        .select('status'),
+        .from('evolution_instances')
+        .select('status, is_active'),
       supabaseServiceRole
         .from('searches')
         .select('status, status_add_gp, status_disparo'),
@@ -59,7 +61,8 @@ export async function GET(req: NextRequest) {
     const totalFailed = campaignsData?.data?.reduce((sum, c) => sum + (c.failed_contacts || 0), 0) || 0;
     const totalAdded = campaignsData?.data?.reduce((sum, c) => sum + (c.total_contacts || 0), 0) || 0;
 
-    const connectedInstances = instancesData?.data?.filter(i => i.status === 'connected').length || 0;
+    // Conta instâncias ativas e com status ok
+    const connectedInstances = instancesData?.data?.filter(i => i.is_active && i.status === 'ok').length || 0;
     const pendingContacts = contactsData?.data?.filter(c => c.status === 'pending').length || 0;
     const addedContacts = contactsData?.data?.filter(c => c.status_add_gp === true).length || 0;
     const sentMessages = contactsData?.data?.filter(c => c.status_disparo === true).length || 0;

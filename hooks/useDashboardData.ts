@@ -176,17 +176,29 @@ export const useDashboardData = () => {
     try {
       addLog('Carregando dados iniciais...', 'info');
 
-      const [contactsResult, instancesResult, campaignsResult, kpiResults] = await Promise.all([
+      // Busca instâncias via API (agora usa evolution_instances)
+      let instancesData: WhatsAppInstance[] = [];
+      try {
+        const instancesResponse = await fetch('/api/instances', {
+          headers: { 'X-User-Id': userId },
+        });
+        if (instancesResponse.ok) {
+          const instancesResult = await instancesResponse.json();
+          if (instancesResult.success && instancesResult.data) {
+            instancesData = instancesResult.data as WhatsAppInstance[];
+          }
+        }
+      } catch (instancesError) {
+        console.error('Erro ao buscar instâncias via API:', instancesError);
+        addLog('Erro ao buscar instâncias. Usando dados locais se disponíveis.', 'error');
+      }
+
+      const [contactsResult, campaignsResult, kpiResults] = await Promise.all([
         supabase
           .from('searches')
           .select('*')
           .eq('user_id', userId)
           .not('telefone', 'is', null)
-          .order('created_at', { ascending: false }),
-        supabase
-          .from('whatsapp_instances')
-          .select('*')
-          .eq('user_id', userId)
           .order('created_at', { ascending: false }),
         supabase
           .from('campaigns')
@@ -215,9 +227,14 @@ export const useDashboardData = () => {
         setContacts(formatted);
       }
 
-      if (!instancesResult.error && instancesResult.data) {
-        setInstances(instancesResult.data as WhatsAppInstance[]);
-        setKpiConnected((instancesResult.data as WhatsAppInstance[]).filter((i: any) => i.status === 'connected').length);
+      // Usa instâncias buscadas via API
+      if (instancesData.length > 0) {
+        setInstances(instancesData);
+        setKpiConnected(instancesData.filter((i: any) => i.status === 'connected').length);
+      } else {
+        // Se não conseguiu buscar, mantém array vazio
+        setInstances([]);
+        setKpiConnected(0);
       }
 
       if (!campaignsResult.error && campaignsResult.data) {

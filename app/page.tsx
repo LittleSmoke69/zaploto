@@ -10,11 +10,13 @@ import GroupsCard from '@/components/Dashboard/GroupsCard';
 import ChartCard from '@/components/Dashboard/ChartCard';
 import ActiveCampaigns from '@/components/Campaigns/ActiveCampaigns';
 import { useDashboardData, Campaign } from '@/hooks/useDashboardData';
-import { CheckCircle2, AlertCircle, Info, X, LogOut } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Info, X, Menu } from 'lucide-react';
 import Link from 'next/link';
+import { useSidebar } from '@/contexts/SidebarContext';
 
 const Dashboard = () => {
   const { checking } = useRequireAuth();
+  const { isCollapsed, setIsCollapsed, isMobileOpen, setIsMobileOpen } = useSidebar();
   const {
     userId,
     instances,
@@ -158,35 +160,39 @@ const Dashboard = () => {
         @keyframes slideIn { from { transform: translateX(400px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
       `}</style>
 
-      <div className="space-y-8">
+      <div className="space-y-8 w-full">
         {/* Header */}
-        <div className="flex justify-between items-start">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-800 mb-2">Dashboard</h1>
-            <p className="text-gray-600">Visão geral do seu sistema</p>
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex-1">
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">Dashboard</h1>
+            <p className="text-sm sm:text-base text-gray-600">Visão geral do seu sistema</p>
           </div>
-          <button
-            onClick={handleSignOut}
-            className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition shadow-md hover:shadow-lg"
-            title="Sair da conta"
-          >
-            <LogOut className="w-5 h-5" />
-            <span>Sair</span>
-          </button>
+          {/* Botão Toggle da Sidebar - Apenas no mobile, no topo direito */}
+          <div className="lg:hidden flex-shrink-0">
+            <button
+              onClick={() => setIsMobileOpen(!isMobileOpen)}
+              className="flex items-center justify-center w-10 h-10 rounded-lg hover:bg-gray-100 transition text-gray-600 shadow-md bg-white"
+              aria-label="Toggle sidebar"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* KPIs */}
-        <DashboardStats
-          kpiSent={kpiSent}
-          kpiAdded={kpiAdded}
-          kpiPending={kpiPending}
-          kpiConnected={kpiConnected}
-          kpiFailedSends={kpiFailedSends}
-          kpiFailedAdds={kpiFailedAdds}
-        />
+        <div data-tour-id="dashboard-resumo">
+          <DashboardStats
+            kpiSent={kpiSent}
+            kpiAdded={kpiAdded}
+            kpiPending={kpiPending}
+            kpiConnected={kpiConnected}
+            kpiFailedSends={kpiFailedSends}
+            kpiFailedAdds={kpiFailedAdds}
+          />
+        </div>
 
         {/* Gráficos e Listas */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 w-full">
           <InstanceList 
             instances={instances} 
             onViewAll={() => window.location.href = '/instances'}
@@ -199,7 +205,7 @@ const Dashboard = () => {
         </div>
 
         {/* Cards Inferiores */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full" data-tour-id="dashboard-instancias-sucesso">
           <SuccessRate rate={successRate} />
           <GroupsCard 
             title="Grupos Salvos no Banco" 
@@ -222,9 +228,9 @@ const Dashboard = () => {
         />
 
         {/* Quick Actions */}
-        <div className="bg-white rounded-xl shadow-md p-6">
+        <div className="bg-white rounded-xl shadow-md p-6 w-full" data-tour-id="dashboard-acoes-rapidas">
           <h2 className="text-lg font-semibold text-gray-800 mb-4">Ações Rápidas</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 w-full">
             <Link
               href="/instances"
               className="p-4 border-2 border-gray-200 rounded-lg hover:border-emerald-500 hover:bg-emerald-50 transition text-center"

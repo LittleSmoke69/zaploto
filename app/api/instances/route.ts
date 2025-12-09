@@ -4,30 +4,72 @@ import { successResponse, errorResponse, serverErrorResponse } from '@/lib/utils
 import { supabaseServiceRole } from '@/lib/services/supabase-service';
 import { evolutionService } from '@/lib/services/evolution-service';
 import { rateLimitService } from '@/lib/services/rate-limit-service';
+import { getUserEvolutionApi } from '@/lib/services/evolution-api-helper';
 
 /**
  * GET /api/instances - Lista todas as instâncias do usuário
+ * Agora busca de evolution_instances vinculadas via user_evolution_apis
  */
 export async function GET(req: NextRequest) {
   try {
     const { userId } = await requireAuth(req);
 
-    const { data, error } = await supabaseServiceRole
-      .from('whatsapp_instances')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
+    // Busca APIs Evolution atribuídas ao usuário
+    const { data: userApis, error: userApisError } = await supabaseServiceRole
+      .from('user_evolution_apis')
+      .select('evolution_api_id')
+      .eq('user_id', userId);
+
+    let instances: any[] = [];
+    let query = supabaseServiceRole
+      .from('evolution_instances')
+      .select(`
+        *,
+        evolution_apis!inner (
+          id,
+          name,
+          base_url,
+          api_key
+        )
+      `);
+
+    // Se o usuário tem APIs atribuídas, filtra por elas
+    if (!userApisError && userApis && userApis.length > 0) {
+      const apiIds = userApis.map(ua => ua.evolution_api_id);
+      query = query.in('evolution_api_id', apiIds);
+    }
+    // Se não tem APIs atribuídas, busca todas as instâncias ativas (fallback)
+    // Isso permite que instâncias criadas apareçam mesmo sem vínculo direto
+
+    const { data, error } = await query.order('created_at', { ascending: false });
 
     if (error) {
-      return errorResponse(`Erro ao buscar instâncias: ${error.message}`);
+      console.error('Erro ao buscar instâncias:', error);
+    } else {
+      // Converte para formato compatível com o frontend
+      instances = (data || []).map((inst: any) => {
+        const evolutionApi = Array.isArray(inst.evolution_apis) 
+          ? inst.evolution_apis[0] 
+          : inst.evolution_apis;
+
+        return {
+          id: inst.id,
+          instance_name: inst.instance_name,
+          status: inst.status === 'ok' ? 'connected' : inst.status === 'disconnected' ? 'disconnected' : 'connecting',
+          number: inst.phone_number,
+          created_at: inst.created_at,
+          updated_at: inst.updated_at,
+          hash: evolutionApi?.api_key || null, // API key da Evolution API para compatibilidade
+          qr_code: null, // QR code é temporário
+          user_id: userId, // Adiciona para compatibilidade
+        };
+      });
     }
 
     // Busca limite de instâncias do usuário
     const instanceLimit = await rateLimitService.checkInstanceLimit(userId);
 
-    // Retorna instâncias no formato antigo para compatibilidade
     // Adiciona informação de limite como propriedade não enumerável para não quebrar código existente
-    const instances = data || [];
     Object.defineProperty(instances, '__limit', {
       value: {
         current: instanceLimit.current,
@@ -70,10 +112,63 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Busca a Evolution API do usuário (ou primeira disponível)
+    const evolutionApi = await getUserEvolutionApi(userId);
+    if (!evolutionApi) {
+      return errorResponse(
+        'Nenhuma Evolution API configurada. Entre em contato com o administrador.',
+        400
+      );
+    }
+
+    // Busca o ID da Evolution API no banco
+    const { data: apiRecord, error: apiError } = await supabaseServiceRole
+      .from('evolution_apis')
+      .select('id')
+      .eq('base_url', evolutionApi.baseUrl)
+      .eq('api_key', evolutionApi.apiKey)
+      .eq('is_active', true)
+      .single();
+
+    if (apiError || !apiRecord) {
+      return errorResponse(
+        'Evolution API não encontrada no banco de dados. Entre em contato com o administrador.',
+        500
+      );
+    }
+
     const fullNumber = `55${phoneNumber}`;
 
-    // Cria instância na Evolution API
-    const evolutionData = await evolutionService.createInstance(instanceName, fullNumber, true);
+    // Cria instância na Evolution API usando a API do usuário
+    // Precisamos criar um serviço temporário com a base_url e api_key corretas
+    const tempEvolutionService = {
+      baseUrl: evolutionApi.baseUrl,
+      masterKey: evolutionApi.apiKey,
+      async createInstance(name: string, number: string, qrcode: boolean = true) {
+        const response = await fetch(`${this.baseUrl}/instance/create`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: this.masterKey,
+          },
+          body: JSON.stringify({
+            instanceName: name,
+            qrcode,
+            number,
+            integration: 'WHATSAPP-BAILEYS',
+          }),
+        });
+
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({}));
+          throw new Error(error.message || `Erro ao criar instância: ${response.statusText}`);
+        }
+
+        return await response.json();
+      },
+    };
+
+    const evolutionData = await tempEvolutionService.createInstance(instanceName, fullNumber, true);
 
     console.log('Evolution API Response:', {
       hasQrcode: !!evolutionData.qrcode,
@@ -109,16 +204,47 @@ export async function POST(req: NextRequest) {
       return errorResponse('Erro ao gerar QR Code na Evolution API. Verifique os logs do servidor.', 500);
     }
 
-    // Salva no banco
+    // Verifica se a instância já existe
+    const { data: existingInstance } = await supabaseServiceRole
+      .from('evolution_instances')
+      .select('id')
+      .eq('evolution_api_id', apiRecord.id)
+      .eq('instance_name', instanceName)
+      .single();
+
+    if (existingInstance) {
+      // Tenta deletar na Evolution se já existe no banco
+      try {
+        if (evolutionData.hash) {
+          const deleteResponse = await fetch(`${evolutionApi.baseUrl}/instance/delete/${instanceName}`, {
+            method: 'DELETE',
+            headers: {
+              apikey: evolutionApi.apiKey,
+            },
+          });
+          if (!deleteResponse.ok) {
+            console.warn('Não foi possível deletar instância duplicada na Evolution');
+          }
+        }
+      } catch (deleteErr) {
+        console.error('Erro ao deletar instância duplicada na Evolution:', deleteErr);
+      }
+      return errorResponse('Instância com este nome já existe para esta Evolution API', 400);
+    }
+
+    // Salva na nova tabela evolution_instances
     const { data: savedInstance, error: dbError } = await supabaseServiceRole
-      .from('whatsapp_instances')
+      .from('evolution_instances')
       .insert({
-        user_id: userId,
+        evolution_api_id: apiRecord.id,
         instance_name: instanceName,
-        status: 'connecting',
-        qr_code: qrCodeBase64,
-        hash: evolutionData.hash,
-        number: fullNumber,
+        phone_number: fullNumber,
+        is_active: true,
+        status: 'ok', // Será atualizado quando conectar
+        daily_limit: 100, // Padrão
+        sent_today: 0,
+        error_today: 0,
+        rate_limit_count_today: 0,
       })
       .select()
       .single();
@@ -127,10 +253,15 @@ export async function POST(req: NextRequest) {
       // Tenta deletar na Evolution se falhou no banco
       try {
         if (evolutionData.hash) {
-          // O método deleteInstance espera apiKey (master key da Evolution API)
-          const apiKey = process.env.EVOLUTION_APIKEY || process.env.NEXT_PUBLIC_EVOLUTION_APIKEY || '';
-          if (apiKey) {
-            await evolutionService.deleteInstance(instanceName, apiKey);
+          // Cria função temporária para deletar
+          const deleteResponse = await fetch(`${evolutionApi.baseUrl}/instance/delete/${instanceName}`, {
+            method: 'DELETE',
+            headers: {
+              apikey: evolutionApi.apiKey,
+            },
+          });
+          if (!deleteResponse.ok) {
+            console.warn('Não foi possível deletar instância na Evolution após falha no banco');
           }
         }
       } catch (deleteErr) {
@@ -139,10 +270,16 @@ export async function POST(req: NextRequest) {
       return errorResponse(`Erro ao salvar instância: ${dbError?.message || 'Erro desconhecido'}`);
     }
 
-    // Garante que o QR code está no objeto retornado
+    // Retorna dados no formato compatível com o frontend (inclui QR code)
     const responseData = {
-      ...savedInstance,
-      qr_code: savedInstance.qr_code || qrCodeBase64,
+      id: savedInstance.id,
+      instance_name: savedInstance.instance_name,
+      status: 'connecting', // Status inicial para compatibilidade
+      qr_code: qrCodeBase64,
+      hash: evolutionData.hash,
+      number: savedInstance.phone_number,
+      created_at: savedInstance.created_at,
+      updated_at: savedInstance.updated_at,
     };
 
     return successResponse(responseData, 'Instância criada com sucesso');

@@ -89,16 +89,78 @@ export class RateLimitService {
 
   /**
    * Verifica se o usuário pode criar mais instâncias
+   * Agora usa evolution_instances vinculadas via user_evolution_apis
    */
   async checkInstanceLimit(userId: string): Promise<{ allowed: boolean; current: number; max: number; reason?: string }> {
     // Busca configurações do usuário
     const settings = await this.getUserSettings(userId);
     const maxInstances = settings.maxInstances;
 
-    const { data: instances, error } = await supabaseServiceRole
-      .from('whatsapp_instances')
-      .select('id')
+    // Busca APIs Evolution atribuídas ao usuário
+    const { data: userApis, error: userApisError } = await supabaseServiceRole
+      .from('user_evolution_apis')
+      .select('evolution_api_id')
       .eq('user_id', userId);
+
+    if (userApisError) {
+      console.error('Erro ao buscar APIs do usuário:', userApisError);
+      // Se não tem APIs atribuídas, conta todas as instâncias ativas (fallback)
+      const { data: allInstances, error } = await supabaseServiceRole
+        .from('evolution_instances')
+        .select('id', { count: 'exact', head: true });
+
+      if (error) {
+        console.error('Erro ao verificar limite de instâncias:', error);
+        return {
+          allowed: true,
+          current: 0,
+          max: maxInstances,
+        };
+      }
+
+      const current = allInstances?.length || 0;
+      const allowed = current < maxInstances;
+
+      return {
+        allowed,
+        current,
+        max: maxInstances,
+        reason: !allowed ? `Limite de ${maxInstances} instâncias atingido` : undefined,
+      };
+    }
+
+    // Se não tem APIs atribuídas, conta todas as instâncias
+    if (!userApis || userApis.length === 0) {
+      const { data: allInstances, error } = await supabaseServiceRole
+        .from('evolution_instances')
+        .select('id', { count: 'exact', head: true });
+
+      if (error) {
+        console.error('Erro ao verificar limite de instâncias:', error);
+        return {
+          allowed: true,
+          current: 0,
+          max: maxInstances,
+        };
+      }
+
+      const current = allInstances?.length || 0;
+      const allowed = current < maxInstances;
+
+      return {
+        allowed,
+        current,
+        max: maxInstances,
+        reason: !allowed ? `Limite de ${maxInstances} instâncias atingido` : undefined,
+      };
+    }
+
+    // Busca instâncias das APIs do usuário
+    const apiIds = userApis.map(ua => ua.evolution_api_id);
+    const { data: instances, error } = await supabaseServiceRole
+      .from('evolution_instances')
+      .select('id')
+      .in('evolution_api_id', apiIds);
 
     if (error) {
       console.error('Erro ao verificar limite de instâncias:', error);
@@ -151,23 +213,44 @@ export class RateLimitService {
 
   /**
    * Obtém status das instâncias para distribuição inteligente
+   * Agora usa evolution_instances
    */
   async getInstancesStatus(userId: string, instanceNames: string[]): Promise<Map<string, InstanceStatus>> {
     const statusMap = new Map<string, InstanceStatus>();
 
-    // Busca instâncias do usuário
+    // Busca APIs Evolution atribuídas ao usuário
+    const { data: userApis } = await supabaseServiceRole
+      .from('user_evolution_apis')
+      .select('evolution_api_id')
+      .eq('user_id', userId);
+
+    if (!userApis || userApis.length === 0) {
+      // Se não tem APIs, inicializa tudo como erro
+      for (const instanceName of instanceNames) {
+        statusMap.set(instanceName, {
+          instanceName,
+          status: 'error',
+          consecutiveErrors: 0,
+        });
+      }
+      return statusMap;
+    }
+
+    // Busca instâncias das APIs do usuário
+    const apiIds = userApis.map(ua => ua.evolution_api_id);
     const { data: instances } = await supabaseServiceRole
-      .from('whatsapp_instances')
-      .select('instance_name, status')
-      .eq('user_id', userId)
+      .from('evolution_instances')
+      .select('instance_name, status, is_active')
+      .in('evolution_api_id', apiIds)
       .in('instance_name', instanceNames);
 
     // Inicializa status para todas as instâncias solicitadas
     for (const instanceName of instanceNames) {
       const instance = instances?.find(i => i.instance_name === instanceName);
+      const isActive = instance?.is_active && instance?.status === 'ok';
       statusMap.set(instanceName, {
         instanceName,
-        status: instance?.status === 'connected' ? 'active' : 'error',
+        status: isActive ? 'active' : 'error',
         consecutiveErrors: 0,
       });
     }
@@ -177,6 +260,7 @@ export class RateLimitService {
 
   /**
    * Marca instância com erro e atualiza contador
+   * Agora usa evolution_instances (mas o balanceador já faz isso, então este método pode estar obsoleto)
    */
   async markInstanceError(
     userId: string,
@@ -184,28 +268,43 @@ export class RateLimitService {
     errorType: 'rate_limit' | 'bad_request' | 'connection_closed' | 'unknown',
     errorMessage: string
   ): Promise<void> {
-    // Busca instância
+    // Busca APIs Evolution atribuídas ao usuário
+    const { data: userApis } = await supabaseServiceRole
+      .from('user_evolution_apis')
+      .select('evolution_api_id')
+      .eq('user_id', userId);
+
+    if (!userApis || userApis.length === 0) {
+      return; // Não tem APIs atribuídas
+    }
+
+    // Busca instância nas APIs do usuário
+    const apiIds = userApis.map(ua => ua.evolution_api_id);
     const { data: instance } = await supabaseServiceRole
-      .from('whatsapp_instances')
+      .from('evolution_instances')
       .select('*')
-      .eq('user_id', userId)
+      .in('evolution_api_id', apiIds)
       .eq('instance_name', instanceName)
       .single();
 
     if (!instance) return;
 
-    // Atualiza status baseado no tipo de erro
+    // Atualiza status baseado no tipo de erro (compatível com o novo sistema)
     let newStatus = instance.status;
     if (errorType === 'connection_closed') {
-      newStatus = 'banned'; // Número banido/desconectado
+      newStatus = 'blocked'; // Número banido/desconectado
     } else if (errorType === 'rate_limit') {
-      newStatus = 'suspended'; // Temporariamente suspenso
+      newStatus = 'rate_limited'; // Temporariamente suspenso
+    } else {
+      newStatus = 'error';
     }
 
     await supabaseServiceRole
-      .from('whatsapp_instances')
+      .from('evolution_instances')
       .update({
         status: newStatus,
+        is_active: errorType === 'connection_closed' ? false : instance.is_active,
+        error_today: instance.error_today + 1,
         updated_at: new Date().toISOString(),
       })
       .eq('id', instance.id);
@@ -213,15 +312,29 @@ export class RateLimitService {
 
   /**
    * Seleciona a melhor instância disponível para uso
+   * NOTA: Este método está obsoleto - use evolutionBalancer.pickBestEvolutionInstance() em vez disso
    */
   async selectBestInstance(userId: string, instanceNames: string[]): Promise<string | null> {
+    // Busca APIs Evolution atribuídas ao usuário
+    const { data: userApis } = await supabaseServiceRole
+      .from('user_evolution_apis')
+      .select('evolution_api_id')
+      .eq('user_id', userId);
+
+    if (!userApis || userApis.length === 0) {
+      return null;
+    }
+
+    // Busca instâncias das APIs do usuário
+    const apiIds = userApis.map(ua => ua.evolution_api_id);
     const { data: instances } = await supabaseServiceRole
-      .from('whatsapp_instances')
-      .select('instance_name, status')
-      .eq('user_id', userId)
+      .from('evolution_instances')
+      .select('instance_name, status, is_active')
+      .in('evolution_api_id', apiIds)
       .in('instance_name', instanceNames)
-      .eq('status', 'connected')
-      .order('updated_at', { ascending: true }); // Usa a menos recentemente usada
+      .eq('is_active', true)
+      .eq('status', 'ok')
+      .order('last_used_at', { ascending: true, nullsFirst: true }); // Usa a menos recentemente usada
 
     if (!instances || instances.length === 0) {
       return null;
