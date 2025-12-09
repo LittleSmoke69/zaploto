@@ -223,15 +223,24 @@ async function processCampaignAsync(
     const jobNumber = i + 1;
     const totalJobs = jobs.length;
 
-    // Verifica se a campanha foi pausada
+    // Verifica se a campanha ainda existe e seu status
+    // IMPORTANTE: Continua processando mesmo se a campanha foi excluída do banco
+    // Isso garante que o processamento não seja interrompido por exclusões
     const { data: campaignCheck } = await supabaseServiceRole
       .from('campaigns')
       .select('status')
       .eq('id', campaignId)
       .single();
 
-    if (campaignCheck?.status === 'paused') {
+    // Se a campanha não existe mais (foi excluída), continua processando
+    // mas não atualiza o status no banco (já foi excluída)
+    if (!campaignCheck) {
+      console.warn(`⚠️ [CAMPANHA ${campaignId}] Campanha não encontrada no banco (pode ter sido excluída), mas continuando processamento dos jobs restantes...`);
+      // Continua processando os jobs mesmo se a campanha foi excluída
+      // Isso garante que os leads sejam processados e adicionados ao grupo
+    } else if (campaignCheck.status === 'paused') {
       // Aguarda até ser retomada ou cancelada (verifica a cada 2 segundos)
+      console.log(`⏸️ [CAMPANHA ${campaignId}] Campanha pausada, aguardando retomada...`);
       while (true) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
         
@@ -241,17 +250,24 @@ async function processCampaignAsync(
           .eq('id', campaignId)
           .single();
 
-        if (!statusCheck || statusCheck.status === 'failed' || statusCheck.status === 'completed') {
+        // Se foi excluída, continua processando
+        if (!statusCheck) {
+          console.warn(`⚠️ [CAMPANHA ${campaignId}] Campanha excluída durante pausa, continuando processamento...`);
+          break; // Continua processamento
+        }
+
+        if (statusCheck.status === 'failed' || statusCheck.status === 'completed') {
+          console.log(`🛑 [CAMPANHA ${campaignId}] Campanha finalizada durante pausa, interrompendo processamento`);
           return; // Finaliza processamento
         }
 
         if (statusCheck.status === 'running') {
+          console.log(`▶️ [CAMPANHA ${campaignId}] Campanha retomada, continuando processamento`);
           break; // Continua processamento
         }
       }
-    }
-
-    if (campaignCheck?.status === 'failed' || campaignCheck?.status === 'completed') {
+    } else if (campaignCheck.status === 'failed' || campaignCheck.status === 'completed') {
+      console.log(`🛑 [CAMPANHA ${campaignId}] Campanha já finalizada (${campaignCheck.status}), interrompendo processamento`);
       break;
     }
 
@@ -385,6 +401,7 @@ async function processCampaignAsync(
       }
 
       // Atualiza progresso no banco a cada job para feedback em tempo real
+      // IMPORTANTE: Só atualiza se a campanha ainda existir no banco
       const progressUpdate = {
         processed_contacts: processed,
         failed_contacts: failed,
@@ -400,9 +417,16 @@ async function processCampaignAsync(
         .select('processed_contacts, failed_contacts');
       
       if (updateError) {
-        console.error(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: Erro ao atualizar progresso no banco:`, updateError);
+        // Se erro for "campanha não encontrada", apenas loga mas continua processando
+        if (updateError.code === 'PGRST116' || updateError.message?.includes('No rows')) {
+          console.warn(`⚠️ [CAMPANHA ${campaignId}] Job ${jobNumber}: Campanha não encontrada no banco (pode ter sido excluída), mas continuando processamento...`);
+        } else {
+          console.error(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: Erro ao atualizar progresso no banco:`, updateError);
+        }
+      } else if (updateData && updateData.length > 0) {
+        console.log(`✅ [CAMPANHA ${campaignId}] Job ${jobNumber}: Progresso atualizado no banco - Processados: ${updateData[0].processed_contacts}, Falhas: ${updateData[0].failed_contacts}`);
       } else {
-        console.log(`✅ [CAMPANHA ${campaignId}] Job ${jobNumber}: Progresso atualizado no banco - Processados: ${updateData?.[0]?.processed_contacts || processed}, Falhas: ${updateData?.[0]?.failed_contacts || failed}`);
+        console.warn(`⚠️ [CAMPANHA ${campaignId}] Job ${jobNumber}: Campanha não encontrada ao atualizar progresso (pode ter sido excluída), mas continuando processamento...`);
       }
 
       // Log de progresso a cada job ou a cada 10 jobs
@@ -428,6 +452,18 @@ async function processCampaignAsync(
     console.log(`✅ [CAMPANHA ${campaignId}] Finalizada: ${processed} sucessos, ${failed} falhas (${successRate}% taxa de sucesso)`);
     console.log(`📊 [CAMPANHA ${campaignId}] Atualizando status final no banco - Status: ${finalStatus}, Processados: ${processed}, Falhas: ${failed}, Total: ${jobs.length}`);
 
+    // Verifica se a campanha ainda existe antes de atualizar
+    const { data: campaignExists } = await supabaseServiceRole
+      .from('campaigns')
+      .select('id')
+      .eq('id', campaignId)
+      .single();
+
+    if (!campaignExists) {
+      console.warn(`⚠️ [CAMPANHA ${campaignId}] Campanha não encontrada no banco (foi excluída), mas processamento concluído: ${processed} sucessos, ${failed} falhas`);
+      return; // Não tenta atualizar se foi excluída
+    }
+
     const finalUpdate = {
       status: finalStatus,
       processed_contacts: processed,
@@ -443,14 +479,19 @@ async function processCampaignAsync(
       .select('id, status, processed_contacts, failed_contacts, completed_at');
     
     if (finalUpdateError) {
-      console.error(`❌ [CAMPANHA ${campaignId}] Erro ao atualizar status final no banco:`, finalUpdateError);
-    } else {
+      // Se erro for "campanha não encontrada", apenas loga
+      if (finalUpdateError.code === 'PGRST116' || finalUpdateError.message?.includes('No rows')) {
+        console.warn(`⚠️ [CAMPANHA ${campaignId}] Campanha foi excluída durante processamento, mas concluída: ${processed} sucessos, ${failed} falhas`);
+      } else {
+        console.error(`❌ [CAMPANHA ${campaignId}] Erro ao atualizar status final no banco:`, finalUpdateError);
+      }
+    } else if (finalUpdateData && finalUpdateData.length > 0) {
       console.log(`✅ [CAMPANHA ${campaignId}] Status final atualizado no banco:`, {
-        id: finalUpdateData?.[0]?.id,
-        status: finalUpdateData?.[0]?.status,
-        processed_contacts: finalUpdateData?.[0]?.processed_contacts,
-        failed_contacts: finalUpdateData?.[0]?.failed_contacts,
-        completed_at: finalUpdateData?.[0]?.completed_at,
+        id: finalUpdateData[0].id,
+        status: finalUpdateData[0].status,
+        processed_contacts: finalUpdateData[0].processed_contacts,
+        failed_contacts: finalUpdateData[0].failed_contacts,
+        completed_at: finalUpdateData[0].completed_at,
       });
     }
   } catch (error: any) {
@@ -458,17 +499,34 @@ async function processCampaignAsync(
     console.error('Stack trace:', error?.stack);
     
     // Marca campanha como falha em caso de erro fatal
+    // Só atualiza se a campanha ainda existir no banco
     try {
-      await supabaseServiceRole
+      const { data: campaignExists } = await supabaseServiceRole
         .from('campaigns')
-        .update({
-          status: 'failed',
-          updated_at: new Date().toISOString(),
-          completed_at: new Date().toISOString(),
-        })
-        .eq('id', campaignId);
+        .select('id')
+        .eq('id', campaignId)
+        .single();
+
+      if (campaignExists) {
+        const { error: updateError } = await supabaseServiceRole
+          .from('campaigns')
+          .update({
+            status: 'failed',
+            updated_at: new Date().toISOString(),
+            completed_at: new Date().toISOString(),
+          })
+          .eq('id', campaignId);
+        
+        if (updateError) {
+          console.error(`❌ [CAMPANHA ${campaignId}] Erro ao atualizar status da campanha para failed:`, updateError);
+        } else {
+          console.log(`✅ [CAMPANHA ${campaignId}] Campanha marcada como failed devido a erro fatal`);
+        }
+      } else {
+        console.warn(`⚠️ [CAMPANHA ${campaignId}] Campanha não encontrada no banco (foi excluída), não é possível atualizar status`);
+      }
     } catch (updateError: any) {
-      console.error(`❌ Erro ao atualizar status da campanha para failed:`, updateError);
+      console.error(`❌ [CAMPANHA ${campaignId}] Erro ao verificar/atualizar status da campanha para failed:`, updateError);
     }
   }
 }

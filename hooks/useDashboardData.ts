@@ -271,40 +271,36 @@ export const useDashboardData = () => {
 
     const updateCampaigns = async () => {
       try {
-        // Busca apenas campanhas ativas primeiro (mais leve)
-        const { data: activeData, error: activeError } = await supabase
+        // Busca TODAS as campanhas para atualizar o estado completo
+        // Isso garante que campanhas ativas sejam atualizadas em tempo real
+        const { data: allCampaignsData, error: campaignsError } = await supabase
           .from('campaigns')
           .select('*')
           .eq('user_id', userId)
-          .in('status', ['running', 'paused'])
           .order('created_at', { ascending: false });
 
-        if (!activeError && activeData) {
-          // Atualiza apenas campanhas ativas no estado existente
-          setCampaigns((prevCampaigns) => {
-            const updatedMap = new Map(prevCampaigns.map(c => [c.id, c]));
-            activeData.forEach((campaign: Campaign) => {
-              updatedMap.set(campaign.id, campaign);
-            });
-            return Array.from(updatedMap.values()).sort(
-              (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-            );
-          });
+        if (!campaignsError && allCampaignsData) {
+          // Atualiza TODAS as campanhas no estado
+          setCampaigns(allCampaignsData as Campaign[]);
 
-          // Se houver campanhas ativas, usa polling rápido (3s), senão lento (30s)
-          const hasActiveCampaigns = activeData.length > 0;
+          // Verifica se há campanhas ativas para ajustar o polling
+          const hasActiveCampaigns = allCampaignsData.some(
+            (c: Campaign) => c.status === 'running' || c.status === 'paused'
+          );
           
           if (interval) {
             clearInterval(interval);
           }
 
           if (hasActiveCampaigns) {
-            // Polling rápido quando há campanhas ativas
-            interval = setInterval(updateCampaigns, 3000);
+            // Polling rápido quando há campanhas ativas (2s para atualização mais frequente)
+            interval = setInterval(updateCampaigns, 2000);
           } else {
             // Polling lento quando não há campanhas ativas (apenas para atualizar histórico)
             interval = setInterval(updateCampaigns, 30000);
           }
+        } else if (campaignsError) {
+          console.error('Erro ao buscar campanhas:', campaignsError);
         }
       } catch (error) {
         console.error('Erro ao atualizar campanhas:', error);
