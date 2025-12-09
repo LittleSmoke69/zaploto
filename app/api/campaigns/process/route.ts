@@ -257,10 +257,12 @@ async function processCampaignAsync(
 
       try {
         // Normaliza o número de telefone (adiciona 55 se não tiver)
+        const originalPhone = job.phone;
         const normalizedPhone = normalizePhoneNumber(job.phone);
         
+        console.log(`📞 [CAMPANHA ${campaignId}] Job ${jobNumber}/${totalJobs}: Telefone original: ${originalPhone} | Normalizado: ${normalizedPhone}`);
         console.log(`📞 [CAMPANHA ${campaignId}] Job ${jobNumber}/${totalJobs}: Adicionando ${normalizedPhone} ao grupo ${groupId}`);
-        console.log(`🔄 [CAMPANHA ${campaignId}] Job ${jobNumber}: Chamando evolutionBalancer.addLeadToGroup...`);
+        console.log(`🔄 [CAMPANHA ${campaignId}] Job ${jobNumber}: Chamando evolutionBalancer.addLeadToGroup para telefone ${normalizedPhone}...`);
         console.log(`🔄 [CAMPANHA ${campaignId}] Job ${jobNumber}: Parâmetros - userId: ${userId}, groupId: ${groupId}, leadPhone: ${normalizedPhone}, preferUserBinding: ${preferUserBinding}`);
         
         const addStartTime = Date.now();
@@ -284,10 +286,11 @@ async function processCampaignAsync(
 
           if (result.success) {
             processed++;
+            console.log(`✅ [CAMPANHA ${campaignId}] Job ${jobNumber}: Telefone ${normalizedPhone} adicionado com SUCESSO! Processados: ${processed}`);
             await rateLimitService.recordLeadUsage(campaignId, 1, true);
             
             // Atualiza contato no banco - marca como adicionado com sucesso
-            await supabaseServiceRole
+            const { error: updateError } = await supabaseServiceRole
               .from('searches')
               .update({
                 status_add_gp: true,
@@ -295,8 +298,15 @@ async function processCampaignAsync(
                 updated_at: new Date().toISOString(),
               })
               .eq('id', job.contactId);
+            
+            if (updateError) {
+              console.error(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: Erro ao atualizar contato ${job.contactId} (telefone ${normalizedPhone}):`, updateError);
+            } else {
+              console.log(`✅ [CAMPANHA ${campaignId}] Job ${jobNumber}: Contato ${job.contactId} (telefone ${normalizedPhone}) atualizado no banco`);
+            }
           } else {
             failed++;
+            console.log(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: Telefone ${normalizedPhone} FALHOU! Erro: ${result.error || 'Desconhecido'}. Falhas: ${failed}`);
             await rateLimitService.recordLeadUsage(campaignId, 1, false);
 
             // Se não há instâncias disponíveis, marca todos os restantes como erro
@@ -349,40 +359,58 @@ async function processCampaignAsync(
         }
       } catch (error: any) {
         failed++;
-        console.error(`❌ [CAMPANHA ${campaignId}] Erro ao processar job ${jobNumber}:`, error);
+        const errorPhone = normalizePhoneNumber(job.phone);
+        console.error(`❌ [CAMPANHA ${campaignId}] Erro ao processar job ${jobNumber} (telefone ${errorPhone}):`, error);
         console.error(`❌ [CAMPANHA ${campaignId}] Stack trace:`, error?.stack);
         console.error(`❌ [CAMPANHA ${campaignId}] Erro detalhado:`, {
           message: error?.message,
           name: error?.name,
           code: error?.code,
+          telefone: errorPhone,
         });
         await rateLimitService.recordLeadUsage(campaignId, 1, false);
         
         // Marca como 'erro' em caso de exceção
-        await supabaseServiceRole
+        const { error: updateError } = await supabaseServiceRole
           .from('searches')
           .update({
             status: 'erro',
             updated_at: new Date().toISOString(),
           })
           .eq('id', job.contactId);
+        
+        if (updateError) {
+          console.error(`❌ [CAMPANHA ${campaignId}] Erro ao atualizar contato ${job.contactId} (telefone ${errorPhone}) como erro:`, updateError);
+        }
       }
 
       // Atualiza progresso no banco a cada job para feedback em tempo real
-      await supabaseServiceRole
+      const progressUpdate = {
+        processed_contacts: processed,
+        failed_contacts: failed,
+        updated_at: new Date().toISOString(),
+      };
+      
+      console.log(`📊 [CAMPANHA ${campaignId}] Job ${jobNumber}: Atualizando progresso no banco - Processados: ${processed}, Falhas: ${failed}, Total jobs: ${jobs.length}`);
+      
+      const { data: updateData, error: updateError } = await supabaseServiceRole
         .from('campaigns')
-        .update({
-          processed_contacts: processed,
-          failed_contacts: failed,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', campaignId);
+        .update(progressUpdate)
+        .eq('id', campaignId)
+        .select('processed_contacts, failed_contacts');
+      
+      if (updateError) {
+        console.error(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: Erro ao atualizar progresso no banco:`, updateError);
+      } else {
+        console.log(`✅ [CAMPANHA ${campaignId}] Job ${jobNumber}: Progresso atualizado no banco - Processados: ${updateData?.[0]?.processed_contacts || processed}, Falhas: ${updateData?.[0]?.failed_contacts || failed}`);
+      }
 
       // Log de progresso a cada job ou a cada 10 jobs
       if ((i + 1) % 10 === 0 || i === jobs.length - 1) {
         const progressPercentage = Math.round(((processed + failed) / jobs.length) * 100);
         const successRate = processed + failed > 0 ? Math.round((processed / (processed + failed)) * 100) : 0;
-        console.log(`📊 [CAMPANHA ${campaignId}] Progresso: ${processed + failed}/${jobs.length} (${progressPercentage}%) | Sucesso: ${successRate}% | Processados: ${processed} | Falhas: ${failed}`);
+        const currentJobPhone = normalizePhoneNumber(jobs[i].phone);
+        console.log(`📊 [CAMPANHA ${campaignId}] Progresso: ${processed + failed}/${jobs.length} (${progressPercentage}%) | Sucesso: ${successRate}% | Processados: ${processed} | Falhas: ${failed} | Último telefone processado: ${currentJobPhone}`);
       }
 
       // Delay entre requisições (exceto no último)
@@ -398,17 +426,33 @@ async function processCampaignAsync(
     const successRate = jobs.length > 0 ? Math.round((processed / jobs.length) * 100) : 0;
     
     console.log(`✅ [CAMPANHA ${campaignId}] Finalizada: ${processed} sucessos, ${failed} falhas (${successRate}% taxa de sucesso)`);
+    console.log(`📊 [CAMPANHA ${campaignId}] Atualizando status final no banco - Status: ${finalStatus}, Processados: ${processed}, Falhas: ${failed}, Total: ${jobs.length}`);
 
-    await supabaseServiceRole
+    const finalUpdate = {
+      status: finalStatus,
+      processed_contacts: processed,
+      failed_contacts: failed,
+      completed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data: finalUpdateData, error: finalUpdateError } = await supabaseServiceRole
       .from('campaigns')
-      .update({
-        status: finalStatus,
-        processed_contacts: processed,
-        failed_contacts: failed,
-        completed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', campaignId);
+      .update(finalUpdate)
+      .eq('id', campaignId)
+      .select('id, status, processed_contacts, failed_contacts, completed_at');
+    
+    if (finalUpdateError) {
+      console.error(`❌ [CAMPANHA ${campaignId}] Erro ao atualizar status final no banco:`, finalUpdateError);
+    } else {
+      console.log(`✅ [CAMPANHA ${campaignId}] Status final atualizado no banco:`, {
+        id: finalUpdateData?.[0]?.id,
+        status: finalUpdateData?.[0]?.status,
+        processed_contacts: finalUpdateData?.[0]?.processed_contacts,
+        failed_contacts: finalUpdateData?.[0]?.failed_contacts,
+        completed_at: finalUpdateData?.[0]?.completed_at,
+      });
+    }
   } catch (error: any) {
     console.error(`❌ [CAMPANHA ${campaignId}] Erro fatal no processamento:`, error);
     console.error('Stack trace:', error?.stack);
