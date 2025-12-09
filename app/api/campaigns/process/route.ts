@@ -114,90 +114,96 @@ async function processCampaignAsync(
   jobs: Array<{ contactId: string; phone: string }>,
   userId: string
 ) {
-  const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] 🚀 Iniciando campanha ${campaignId} - ${jobs.length} jobs`);
+  try {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] 🚀 Iniciando campanha ${campaignId} - ${jobs.length} jobs`);
 
-  const strategy = campaign.strategy || {};
-  const groupId = campaign.group_id;
-  const delayConfig = strategy.delayConfig || {};
-  // Balanceamento automático é sempre ativo - atribuição de usuário é opcional
-  const preferUserBinding = strategy.preferUserBinding === true; // Só prioriza usuário se explicitamente ativado
+    const strategy = campaign.strategy || {};
+    const groupId = campaign.group_id;
+    const delayConfig = strategy.delayConfig || {};
+    // Balanceamento automático é sempre ativo - atribuição de usuário é opcional
+    const preferUserBinding = strategy.preferUserBinding === true; // Só prioriza usuário se explicitamente ativado
 
-  if (!groupId) {
-    console.error(`❌ ERRO: Campanha ${campaignId} sem group_id`);
-    await supabaseServiceRole
-      .from('campaigns')
-      .update({
-        status: 'failed',
-        updated_at: new Date().toISOString(),
-        completed_at: new Date().toISOString(),
-      })
-      .eq('id', campaignId);
-    return;
-  }
-
-  // Verifica se há instâncias disponíveis usando o balanceador
-  // Balanceamento automático distribui carga entre TODAS as Evolution APIs ativas
-  const testInstance = await evolutionBalancer.pickBestEvolutionInstance({
-    userId,
-    preferUserBinding, // Opcional - se false, usa todas as APIs disponíveis
-  });
-
-  if (!testInstance) {
-    console.error(`❌ Nenhuma instância disponível para campanha ${campaignId}`);
-    await supabaseServiceRole
-      .from('campaigns')
-      .update({
-        status: 'failed',
-        updated_at: new Date().toISOString(),
-        completed_at: new Date().toISOString(),
-      })
-      .eq('id', campaignId);
-    return;
-  }
-
-  // Função para normalizar número de telefone (adiciona 55 se não tiver, remove duplicação)
-  const normalizePhoneNumber = (phone: string): string => {
-    // Remove caracteres não numéricos
-    let cleaned = phone.replace(/\D/g, '');
-    
-    // Remove "55" duplicado no início (ex: "555599798679" -> "5599798679")
-    if (cleaned.startsWith('5555')) {
-      cleaned = cleaned.substring(2); // Remove os dois primeiros "55"
+    if (!groupId) {
+      console.error(`❌ ERRO: Campanha ${campaignId} sem group_id`);
+      await supabaseServiceRole
+        .from('campaigns')
+        .update({
+          status: 'failed',
+          updated_at: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+        })
+        .eq('id', campaignId);
+      return;
     }
-    
-    // Se já começa com 55 (e não é duplicado), retorna como está
-    if (cleaned.startsWith('55') && !cleaned.startsWith('5555')) {
-      return cleaned;
+
+    console.log(`📋 [CAMPANHA ${campaignId}] GroupId: ${groupId}, Jobs: ${jobs.length}`);
+
+    // Verifica se há instâncias disponíveis usando o balanceador
+    // Balanceamento automático distribui carga entre TODAS as Evolution APIs ativas
+    console.log(`🔍 [CAMPANHA ${campaignId}] Verificando instâncias disponíveis...`);
+    const testInstance = await evolutionBalancer.pickBestEvolutionInstance({
+      userId,
+      preferUserBinding, // Opcional - se false, usa todas as APIs disponíveis
+    });
+
+    if (!testInstance) {
+      console.error(`❌ Nenhuma instância disponível para campanha ${campaignId}`);
+      await supabaseServiceRole
+        .from('campaigns')
+        .update({
+          status: 'failed',
+          updated_at: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+        })
+        .eq('id', campaignId);
+      return;
     }
+
+    console.log(`✅ [CAMPANHA ${campaignId}] Instância selecionada: ${testInstance.instance_name}`);
+
+    // Função para normalizar número de telefone (adiciona 55 se não tiver, remove duplicação)
+    const normalizePhoneNumber = (phone: string): string => {
+      // Remove caracteres não numéricos
+      let cleaned = phone.replace(/\D/g, '');
+      
+      // Remove "55" duplicado no início (ex: "555599798679" -> "5599798679")
+      if (cleaned.startsWith('5555')) {
+        cleaned = cleaned.substring(2); // Remove os dois primeiros "55"
+      }
+      
+      // Se já começa com 55 (e não é duplicado), retorna como está
+      if (cleaned.startsWith('55') && !cleaned.startsWith('5555')) {
+        return cleaned;
+      }
+      
+      // Se não começa com 55, adiciona
+      return `55${cleaned}`;
+    };
+
+    // Função para calcular delay
+    const getDelay = (): number => {
+      if (delayConfig.delayMode === 'random') {
+        const min = Math.max(1, Number(delayConfig.randomMinSeconds) || 1);
+        const max = Math.max(1, Number(delayConfig.randomMaxSeconds) || 1);
+        const seconds = Math.floor(Math.random() * (max - min + 1)) + min;
+        return seconds * 1000;
+      } else {
+        const value = Number(delayConfig.delayValue) || 0;
+        const unit = delayConfig.delayUnit === 'minutes' ? 60 : 1;
+        return Math.max(1000, value * unit * 1000);
+      }
+    };
+
+    // Processa jobs sequencialmente com delay entre cada um
+    // A concorrência é controlada pelo número de instâncias disponíveis
+    let processed = 0;
+    let failed = 0;
+
+    // Processa cada job sequencialmente com delay
+    console.log(`🔄 [CAMPANHA ${campaignId}] Iniciando processamento de ${jobs.length} jobs...`);
     
-    // Se não começa com 55, adiciona
-    return `55${cleaned}`;
-  };
-
-  // Função para calcular delay
-  const getDelay = (): number => {
-    if (delayConfig.delayMode === 'random') {
-      const min = Math.max(1, Number(delayConfig.randomMinSeconds) || 1);
-      const max = Math.max(1, Number(delayConfig.randomMaxSeconds) || 1);
-      const seconds = Math.floor(Math.random() * (max - min + 1)) + min;
-      return seconds * 1000;
-    } else {
-      const value = Number(delayConfig.delayValue) || 0;
-      const unit = delayConfig.delayUnit === 'minutes' ? 60 : 1;
-      return Math.max(1000, value * unit * 1000);
-    }
-  };
-
-  // O balanceador já seleciona a melhor instância automaticamente, não precisa mais dessa função
-
-  // Processa jobs sequencialmente com delay entre cada um
-  // A concorrência é controlada pelo número de instâncias disponíveis
-  let processed = 0;
-  let failed = 0;
-
-  // Processa cada job sequencialmente com delay
-  for (let i = 0; i < jobs.length; i++) {
+    for (let i = 0; i < jobs.length; i++) {
     const job = jobs[i];
     const jobNumber = i + 1;
     const totalJobs = jobs.length;
@@ -234,70 +240,88 @@ async function processCampaignAsync(
       break;
     }
 
-    try {
-      // Normaliza o número de telefone (adiciona 55 se não tiver)
-      const normalizedPhone = normalizePhoneNumber(job.phone);
-      
-      // Usa o balanceador automático para adicionar lead ao grupo
-      // O balanceador distribui automaticamente entre todas as Evolution APIs ativas
-      const result = await evolutionBalancer.addLeadToGroup({
-        userId, // Opcional - usado apenas se preferUserBinding=true
-        groupId,
-        leadPhone: normalizedPhone,
-        preferUserBinding, // Se false, distribui entre todas as APIs
-      });
-
-      if (result.success) {
-        processed++;
-        await rateLimitService.recordLeadUsage(campaignId, 1, true);
+      try {
+        // Normaliza o número de telefone (adiciona 55 se não tiver)
+        const normalizedPhone = normalizePhoneNumber(job.phone);
         
-        // Atualiza contato no banco - marca como adicionado com sucesso
-        await supabaseServiceRole
-          .from('searches')
-          .update({
-            status_add_gp: true,
-            status: 'added',
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', job.contactId);
-      } else {
-        failed++;
-        await rateLimitService.recordLeadUsage(campaignId, 1, false);
+        console.log(`📞 [CAMPANHA ${campaignId}] Job ${jobNumber}: Adicionando ${normalizedPhone} ao grupo ${groupId}`);
+        
+        // Usa o balanceador automático para adicionar lead ao grupo
+        // O balanceador distribui automaticamente entre todas as Evolution APIs ativas
+        const result = await evolutionBalancer.addLeadToGroup({
+          userId, // Opcional - usado apenas se preferUserBinding=true
+          groupId,
+          leadPhone: normalizedPhone,
+          preferUserBinding, // Se false, distribui entre todas as APIs
+        });
+        
+        console.log(`📊 [CAMPANHA ${campaignId}] Job ${jobNumber}: Resultado - ${result.success ? 'SUCESSO' : 'FALHA'} ${result.error ? `(${result.error})` : ''}`);
 
-        // Se não há instâncias disponíveis, marca todos os restantes como erro
-        if (result.errorType === 'no_instance_available') {
-          const remaining = jobs.length - i;
-          const remainingJobs = jobs.slice(i);
-          const remainingContactIds = remainingJobs.map(j => j.contactId);
+        if (result.success) {
+          processed++;
+          await rateLimitService.recordLeadUsage(campaignId, 1, true);
           
-          if (remainingContactIds.length > 0) {
-            await supabaseServiceRole
-              .from('searches')
-              .update({
-                status: 'erro',
-                updated_at: new Date().toISOString(),
-              })
-              .in('id', remainingContactIds);
-          }
-          console.error(`❌ Nenhuma instância disponível. ${remaining} jobs restantes marcados como erro.`);
-          break;
-        }
-
-        // Se erro for connection_closed, atualiza status da instância para disconnected
-        if (result.errorType === 'connection_closed' && result.instanceUsed) {
+          // Atualiza contato no banco - marca como adicionado com sucesso
           await supabaseServiceRole
-            .from('evolution_instances')
+            .from('searches')
             .update({
-              status: 'disconnected',
-              is_active: false,
+              status_add_gp: true,
+              status: 'added',
               updated_at: new Date().toISOString(),
             })
-            .eq('id', result.instanceUsed.id);
-          
-          console.warn(`⚠️ Instância ${result.instanceUsed.instance_name} marcada como desconectada devido a connection_closed`);
-        }
+            .eq('id', job.contactId);
+        } else {
+          failed++;
+          await rateLimitService.recordLeadUsage(campaignId, 1, false);
 
-        // Marca como 'erro' quando falha
+          // Se não há instâncias disponíveis, marca todos os restantes como erro
+          if (result.errorType === 'no_instance_available') {
+            const remaining = jobs.length - i;
+            const remainingJobs = jobs.slice(i);
+            const remainingContactIds = remainingJobs.map(j => j.contactId);
+            
+            if (remainingContactIds.length > 0) {
+              await supabaseServiceRole
+                .from('searches')
+                .update({
+                  status: 'erro',
+                  updated_at: new Date().toISOString(),
+                })
+                .in('id', remainingContactIds);
+            }
+            console.error(`❌ [CAMPANHA ${campaignId}] Nenhuma instância disponível. ${remaining} jobs restantes marcados como erro.`);
+            break;
+          }
+
+          // Se erro for connection_closed, atualiza status da instância para disconnected
+          if (result.errorType === 'connection_closed' && result.instanceUsed) {
+            await supabaseServiceRole
+              .from('evolution_instances')
+              .update({
+                status: 'disconnected',
+                is_active: false,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', result.instanceUsed.id);
+            
+            console.warn(`⚠️ [CAMPANHA ${campaignId}] Instância ${result.instanceUsed.instance_name} marcada como desconectada devido a connection_closed`);
+          }
+
+          // Marca como 'erro' quando falha
+          await supabaseServiceRole
+            .from('searches')
+            .update({
+              status: 'erro',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', job.contactId);
+        }
+      } catch (error: any) {
+        failed++;
+        console.error(`❌ [CAMPANHA ${campaignId}] Erro ao processar job ${jobNumber}:`, error);
+        await rateLimitService.recordLeadUsage(campaignId, 1, false);
+        
+        // Marca como 'erro' em caso de exceção
         await supabaseServiceRole
           .from('searches')
           .update({
@@ -306,59 +330,64 @@ async function processCampaignAsync(
           })
           .eq('id', job.contactId);
       }
-    } catch (error: any) {
-      failed++;
-      await rateLimitService.recordLeadUsage(campaignId, 1, false);
-      
-      // Marca como 'erro' em caso de exceção
+
+      // Atualiza progresso no banco a cada job para feedback em tempo real
       await supabaseServiceRole
-        .from('searches')
+        .from('campaigns')
         .update({
-          status: 'erro',
+          processed_contacts: processed,
+          failed_contacts: failed,
           updated_at: new Date().toISOString(),
         })
-        .eq('id', job.contactId);
+        .eq('id', campaignId);
+
+      // Log de progresso a cada job ou a cada 10 jobs
+      if ((i + 1) % 10 === 0 || i === jobs.length - 1) {
+        const progressPercentage = Math.round(((processed + failed) / jobs.length) * 100);
+        const successRate = processed + failed > 0 ? Math.round((processed / (processed + failed)) * 100) : 0;
+        console.log(`📊 [CAMPANHA ${campaignId}] Progresso: ${processed + failed}/${jobs.length} (${progressPercentage}%) | Sucesso: ${successRate}% | Processados: ${processed} | Falhas: ${failed}`);
+      }
+
+      // Delay entre requisições (exceto no último)
+      if (i < jobs.length - 1) {
+        const delay = getDelay();
+        console.log(`⏳ [CAMPANHA ${campaignId}] Aguardando ${delay}ms antes do próximo job...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
     }
 
-    // Atualiza progresso no banco a cada job para feedback em tempo real
+    // Finaliza campanha
+    const finalStatus = failed === jobs.length ? 'failed' : 'completed';
+    const successRate = jobs.length > 0 ? Math.round((processed / jobs.length) * 100) : 0;
+    
+    console.log(`✅ [CAMPANHA ${campaignId}] Finalizada: ${processed} sucessos, ${failed} falhas (${successRate}% taxa de sucesso)`);
+
     await supabaseServiceRole
       .from('campaigns')
       .update({
+        status: finalStatus,
         processed_contacts: processed,
         failed_contacts: failed,
+        completed_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
       .eq('id', campaignId);
-
-    // Log de progresso a cada 10 jobs
-    if ((i + 1) % 10 === 0 || i === jobs.length - 1) {
-      const progressPercentage = Math.round(((processed + failed) / jobs.length) * 100);
-      const successRate = processed + failed > 0 ? Math.round((processed / (processed + failed)) * 100) : 0;
-      console.log(`📊 Progresso: ${processed + failed}/${jobs.length} (${progressPercentage}%) | Sucesso: ${successRate}% | Processados: ${processed} | Falhas: ${failed}`);
-    }
-
-    // Delay entre requisições (exceto no último)
-    if (i < jobs.length - 1) {
-      const delay = getDelay();
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
+  } catch (error: any) {
+    console.error(`❌ [CAMPANHA ${campaignId}] Erro fatal no processamento:`, error);
+    console.error('Stack trace:', error?.stack);
+    
+    // Marca campanha como falha em caso de erro fatal
+    await supabaseServiceRole
+      .from('campaigns')
+      .update({
+        status: 'failed',
+        updated_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+      })
+      .eq('id', campaignId)
+      .catch((updateError) => {
+        console.error(`❌ Erro ao atualizar status da campanha para failed:`, updateError);
+      });
   }
-
-  // Finaliza campanha
-  const finalStatus = failed === jobs.length ? 'failed' : 'completed';
-  const successRate = jobs.length > 0 ? Math.round((processed / jobs.length) * 100) : 0;
-  
-  console.log(`✅ Campanha ${campaignId} finalizada: ${processed} sucessos, ${failed} falhas (${successRate}% taxa de sucesso)`);
-
-  await supabaseServiceRole
-    .from('campaigns')
-    .update({
-      status: finalStatus,
-      processed_contacts: processed,
-      failed_contacts: failed,
-      completed_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', campaignId);
 }
 
