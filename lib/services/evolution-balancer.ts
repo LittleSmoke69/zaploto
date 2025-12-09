@@ -363,18 +363,38 @@ export class EvolutionBalancer {
     console.log(`📤 [BALANCEADOR] Payload:`, JSON.stringify(payload));
     console.log(`📤 [BALANCEADOR] Headers: apikey presente: ${!!apiKey}`);
 
+    const fetchStartTime = Date.now();
     try {
       console.log(`🔄 [BALANCEADOR] Iniciando fetch para Evolution API...`);
-      const fetchStartTime = Date.now();
       
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          apikey: apiKey,
-        },
-        body: JSON.stringify(payload),
-      });
+      // Timeout de 30 segundos para evitar travamentos
+      const FETCH_TIMEOUT_MS = 30000; // 30 segundos
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+        console.warn(`⏱️ [BALANCEADOR] Timeout de ${FETCH_TIMEOUT_MS}ms atingido para ${url}`);
+      }, FETCH_TIMEOUT_MS);
+      
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: apiKey,
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+      } catch (fetchError: any) {
+        clearTimeout(timeoutId);
+        // Se foi abortado por timeout, relança com mensagem específica
+        if (fetchError.name === 'AbortError' || controller.signal.aborted) {
+          throw new Error(`Timeout: requisição excedeu ${FETCH_TIMEOUT_MS}ms`);
+        }
+        throw fetchError;
+      }
 
       const fetchDuration = Date.now() - fetchStartTime;
       console.log(`⏱️ [BALANCEADOR] Fetch concluído em ${fetchDuration}ms - Status: ${response.status}`);
@@ -453,29 +473,73 @@ export class EvolutionBalancer {
         responseData,
       };
     } catch (error: any) {
-      console.error(`❌ [BALANCEADOR] Erro no fetch:`, error);
+      const errorDuration = Date.now() - fetchStartTime;
+      console.error(`❌ [BALANCEADOR] Erro no fetch após ${errorDuration}ms:`, error);
       console.error(`❌ [BALANCEADOR] Erro detalhado:`, {
         message: error?.message,
         name: error?.name,
         code: error?.code,
+        cause: error?.cause,
         stack: error?.stack?.substring(0, 500),
       });
+      
+      // Verifica se é erro de timeout
+      const isTimeout = 
+        error?.message?.toLowerCase().includes('timeout') ||
+        error?.name === 'AbortError' ||
+        error?.message?.toLowerCase().includes('excedeu');
+      
+      // Verifica se é erro de conexão (ECONNRESET, ECONNREFUSED, etc)
       const isConnectionError = 
         error?.message?.toLowerCase().includes('connection closed') ||
         error?.message?.toLowerCase().includes('econnreset') ||
         error?.message?.toLowerCase().includes('socket hang up') ||
         error?.message?.toLowerCase().includes('econnrefused') ||
+        error?.message?.toLowerCase().includes('tls connection') ||
+        error?.message?.toLowerCase().includes('network socket disconnected') ||
         error?.code === 'ECONNRESET' ||
-        error?.code === 'ECONNREFUSED';
+        error?.code === 'ECONNREFUSED' ||
+        error?.code === 'ETIMEDOUT' ||
+        error?.cause?.code === 'ECONNRESET' ||
+        error?.cause?.code === 'ECONNREFUSED';
 
-      if (isConnectionError) {
+      if (isTimeout) {
+        console.error(`⏱️ [BALANCEADOR] Timeout na requisição para ${url}`);
         return {
           success: false,
-          error: 'Conexão fechada - número pode estar banido ou desconectado',
+          error: `Timeout: requisição excedeu o tempo limite (${errorDuration}ms)`,
+          errorType: 'connection_closed', // Trata timeout como erro de conexão
+          added: 0,
+          httpStatus: 0,
+          responseData: { 
+            error: error?.message, 
+            code: error?.code,
+            type: 'timeout',
+            duration: errorDuration 
+          },
+        };
+      }
+
+      if (isConnectionError) {
+        console.error(`🔌 [BALANCEADOR] Erro de conexão detectado:`, {
+          code: error?.code || error?.cause?.code,
+          message: error?.message,
+          host: error?.cause?.host || new URL(url).hostname,
+          port: error?.cause?.port,
+        });
+        return {
+          success: false,
+          error: 'Erro de conexão com a Evolution API - verifique se o servidor está acessível',
           errorType: 'connection_closed',
           added: 0,
           httpStatus: 0,
-          responseData: { error: error?.message, code: error?.code },
+          responseData: { 
+            error: error?.message, 
+            code: error?.code || error?.cause?.code,
+            host: error?.cause?.host,
+            port: error?.cause?.port,
+            duration: errorDuration 
+          },
         };
       }
 
@@ -485,7 +549,13 @@ export class EvolutionBalancer {
         errorType: 'unknown',
         added: 0,
         httpStatus: 0,
-        responseData: { error: error?.message, name: error?.name, code: error?.code },
+        responseData: { 
+          error: error?.message, 
+          name: error?.name, 
+          code: error?.code,
+          cause: error?.cause,
+          duration: errorDuration 
+        },
       };
     }
   }

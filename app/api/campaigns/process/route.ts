@@ -217,6 +217,7 @@ async function processCampaignAsync(
 
     // Processa cada job sequencialmente com delay
     console.log(`🔄 [CAMPANHA ${campaignId}] Iniciando processamento de ${jobs.length} jobs...`);
+    console.log(`🚀 [CAMPANHA ${campaignId}] PRIMEIRO JOB será executado IMEDIATAMENTE, depois aplicará delay entre os demais`);
     
     for (let i = 0; i < jobs.length; i++) {
     const job = jobs[i];
@@ -438,10 +439,14 @@ async function processCampaignAsync(
       }
 
       // Delay entre requisições (exceto no último)
+      // IMPORTANTE: O primeiro job já foi executado imediatamente acima
+      // Agora aplicamos delay APÓS cada job (antes do próximo)
       if (i < jobs.length - 1) {
         const delay = getDelay();
-        console.log(`⏳ [CAMPANHA ${campaignId}] Aguardando ${delay}ms antes do próximo job...`);
+        console.log(`⏳ [CAMPANHA ${campaignId}] Job ${jobNumber} concluído. Aguardando ${delay}ms (${(delay/1000).toFixed(1)}s) antes do próximo job...`);
         await new Promise((resolve) => setTimeout(resolve, delay));
+      } else {
+        console.log(`✅ [CAMPANHA ${campaignId}] Último job (${jobNumber}) concluído, sem delay`);
       }
     }
 

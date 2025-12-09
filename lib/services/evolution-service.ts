@@ -202,14 +202,34 @@ export class EvolutionService {
     });
 
     try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          apikey: apiKey,
-        },
-        body: JSON.stringify(payload),
-      });
+      // Timeout de 30 segundos para evitar travamentos
+      const FETCH_TIMEOUT_MS = 30000; // 30 segundos
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+        console.warn(`⏱️ [Evolution API] Timeout de ${FETCH_TIMEOUT_MS}ms atingido para ${url}`);
+      }, FETCH_TIMEOUT_MS);
+      
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: apiKey,
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+      } catch (fetchError: any) {
+        clearTimeout(timeoutId);
+        // Se foi abortado por timeout, relança com mensagem específica
+        if (fetchError.name === 'AbortError' || controller.signal.aborted) {
+          throw new Error(`Timeout: requisição excedeu ${FETCH_TIMEOUT_MS}ms`);
+        }
+        throw fetchError;
+      }
 
       const duration = Date.now() - startTime;
       const responseText = await response.text();
@@ -344,24 +364,58 @@ export class EvolutionService {
         timestamp: new Date().toISOString(),
       };
 
-      // Erro de conexão (Connection Closed)
+      // Verifica se é erro de timeout
+      const isTimeout = 
+        error?.message?.toLowerCase().includes('timeout') ||
+        error?.name === 'AbortError' ||
+        error?.message?.toLowerCase().includes('excedeu');
+      
+      // Erro de conexão (Connection Closed, ECONNRESET, etc)
       const isConnectionError = 
         error?.message?.toLowerCase().includes('connection closed') ||
         error?.message?.toLowerCase().includes('econnreset') ||
         error?.message?.toLowerCase().includes('socket hang up') ||
         error?.message?.toLowerCase().includes('econnrefused') ||
+        error?.message?.toLowerCase().includes('tls connection') ||
+        error?.message?.toLowerCase().includes('network socket disconnected') ||
         error?.code === 'ECONNRESET' ||
-        error?.code === 'ECONNREFUSED';
+        error?.code === 'ECONNREFUSED' ||
+        error?.code === 'ETIMEDOUT' ||
+        error?.cause?.code === 'ECONNRESET' ||
+        error?.cause?.code === 'ECONNREFUSED';
+
+      if (isTimeout) {
+        console.error(`⏱️ [Evolution API] Timeout na requisição:`, errorDetails);
+        return {
+          success: false,
+          error: `Timeout: requisição excedeu o tempo limite (${duration}ms)`,
+          errorType: 'connection_closed',
+          added: 0,
+          httpStatus: 0,
+          responseData: { 
+            error: error?.message, 
+            code: error?.code,
+            type: 'timeout',
+            duration 
+          },
+        };
+      }
 
       if (isConnectionError) {
         console.error(`❌ [Evolution API] Erro de conexão (Connection Closed):`, errorDetails);
         return {
           success: false,
-          error: 'Conexão fechada - número pode estar banido ou desconectado',
+          error: 'Erro de conexão com a Evolution API - verifique se o servidor está acessível',
           errorType: 'connection_closed',
           added: 0,
           httpStatus: 0,
-          responseData: { error: error?.message, code: error?.code },
+          responseData: { 
+            error: error?.message, 
+            code: error?.code || error?.cause?.code,
+            host: error?.cause?.host,
+            port: error?.cause?.port,
+            duration 
+          },
         };
       }
 

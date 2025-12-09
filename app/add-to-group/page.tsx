@@ -535,7 +535,7 @@ const AddToGroupPage = () => {
             }
           }}
           onDelete={async (campaignId: string) => {
-            if (!confirm('Tem certeza que deseja excluir esta campanha?')) return;
+            if (!confirm('Tem certeza que deseja excluir esta campanha? O processamento continuará em background, mas a campanha será removida da lista.')) return;
             if (!userId) {
               showToast('Sessão inválida', 'error');
               return;
@@ -549,13 +549,22 @@ const AddToGroupPage = () => {
               });
               const data = await response.json();
               if (data.success) {
-                showToast('Campanha excluída com sucesso', 'success');
-                loadInitialData();
+                showToast('Campanha excluída com sucesso. O processamento continuará em background.', 'success');
+                // Recarrega dados imediatamente para remover da lista
+                await loadInitialData();
+                // Força atualização novamente após 1 segundo para garantir
+                setTimeout(async () => {
+                  await loadInitialData();
+                }, 1000);
               } else {
                 showToast(data.message || 'Erro ao excluir campanha', 'error');
+                // Recarrega mesmo em caso de erro para garantir estado consistente
+                await loadInitialData();
               }
             } catch (error) {
               showToast('Erro ao excluir campanha', 'error');
+              // Recarrega mesmo em caso de erro para garantir estado consistente
+              await loadInitialData();
             }
           }}
           />

@@ -280,8 +280,35 @@ export const useDashboardData = () => {
           .order('created_at', { ascending: false });
 
         if (!campaignsError && allCampaignsData) {
-          // Atualiza TODAS as campanhas no estado
-          setCampaigns(allCampaignsData as Campaign[]);
+          // Atualiza TODAS as campanhas no estado de forma reativa
+          // Usa função de atualização para garantir que o React detecte mudanças
+          setCampaigns((prevCampaigns) => {
+            // Cria um mapa das campanhas atuais para comparação
+            const currentMap = new Map(prevCampaigns.map(c => [c.id, c]));
+            const newMap = new Map(allCampaignsData.map((c: Campaign) => [c.id, c]));
+            
+            // Verifica se houve mudanças significativas (status, progresso)
+            let hasChanges = false;
+            for (const [id, newCampaign] of newMap) {
+              const oldCampaign = currentMap.get(id);
+              if (!oldCampaign || 
+                  oldCampaign.status !== newCampaign.status ||
+                  oldCampaign.processed_contacts !== newCampaign.processed_contacts ||
+                  oldCampaign.failed_contacts !== newCampaign.failed_contacts ||
+                  oldCampaign.updated_at !== newCampaign.updated_at) {
+                hasChanges = true;
+                break;
+              }
+            }
+            
+            // Se não há campanhas antigas ou há mudanças, atualiza
+            if (prevCampaigns.length === 0 || hasChanges || newMap.size !== currentMap.size) {
+              return allCampaignsData as Campaign[];
+            }
+            
+            // Retorna o estado anterior se não houve mudanças (evita re-render desnecessário)
+            return prevCampaigns;
+          });
 
           // Verifica se há campanhas ativas para ajustar o polling
           const hasActiveCampaigns = allCampaignsData.some(
@@ -293,8 +320,8 @@ export const useDashboardData = () => {
           }
 
           if (hasActiveCampaigns) {
-            // Polling rápido quando há campanhas ativas (2s para atualização mais frequente)
-            interval = setInterval(updateCampaigns, 2000);
+            // Polling rápido quando há campanhas ativas (1.5s para atualização mais frequente)
+            interval = setInterval(updateCampaigns, 1500);
           } else {
             // Polling lento quando não há campanhas ativas (apenas para atualizar histórico)
             interval = setInterval(updateCampaigns, 30000);
