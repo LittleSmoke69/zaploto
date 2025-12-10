@@ -297,7 +297,7 @@ export async function POST(req: NextRequest) {
         error_today: 0,
         rate_limit_count_today: 0,
         user_id: userId, // Vincula a instância ao usuário que criou
-        instance_apikey: instanceApikey, // CRÍTICO: Salva a apikey da instância
+        apikey: instanceApikey, // CRÍTICO: Salva a apikey da instância
       })
       .select()
       .single();

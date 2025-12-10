@@ -78,7 +78,7 @@ export class EvolutionBalancer {
       .eq('is_active', true)
       .eq('status', 'ok')
       .eq('evolution_apis.is_active', true)
-      .not('instance_apikey', 'is', null); // CRÍTICO: Só instâncias com apikey
+      .not('apikey', 'is', null); // CRÍTICO: Só instâncias com apikey
 
     // Atribuição de usuário é OPCIONAL - apenas prioriza se preferUserBinding=true e usuário tem APIs atribuídas
     if (preferUserBinding && userId) {
@@ -279,14 +279,14 @@ export class EvolutionBalancer {
     // CRÍTICO: Busca a apikey da instância (não a global)
     const { data: instanceData } = await supabaseServiceRole
       .from('evolution_instances')
-      .select('instance_apikey')
+      .select('apikey')
       .eq('id', instance.id)
       .single();
     
-    const instanceApikey = instanceData?.instance_apikey;
+    const instanceApikey = instanceData?.apikey;
     
     if (!instanceApikey) {
-      console.error(`❌ [BALANCEADOR] Instância ${instance_name} não possui instance_apikey`);
+      console.error(`❌ [BALANCEADOR] Instância ${instance_name} não possui apikey`);
       return {
         success: false,
         error: 'Instância não possui apikey configurada',
