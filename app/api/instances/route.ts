@@ -273,6 +273,15 @@ export async function POST(req: NextRequest) {
       return errorResponse('Instância com este nome já existe para esta Evolution API', 400);
     }
 
+    // CRÍTICO: Captura a apikey da instância do hash retornado pela Evolution API
+    const instanceApikey = evolutionData.hash?.apikey || null;
+    
+    if (!instanceApikey) {
+      console.warn(`⚠️ [INSTÂNCIA] Hash.apikey não encontrado na resposta da Evolution API. Resposta:`, JSON.stringify(evolutionData).substring(0, 500));
+    } else {
+      console.log(`✅ [INSTÂNCIA] Apikey da instância capturada: ${instanceApikey.substring(0, 10)}...`);
+    }
+
     // Salva na nova tabela evolution_instances com user_id
     // Status inicial deve ser 'disconnected' ou 'connecting' - NÃO 'ok' (que significa conectado)
     const { data: savedInstance, error: dbError } = await supabaseServiceRole
@@ -288,6 +297,7 @@ export async function POST(req: NextRequest) {
         error_today: 0,
         rate_limit_count_today: 0,
         user_id: userId, // Vincula a instância ao usuário que criou
+        instance_apikey: instanceApikey, // CRÍTICO: Salva a apikey da instância
       })
       .select()
       .single();

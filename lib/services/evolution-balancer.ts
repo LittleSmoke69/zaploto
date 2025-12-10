@@ -72,13 +72,13 @@ export class EvolutionBalancer {
           id,
           name,
           base_url,
-          api_key,
           is_active
         )
       `)
       .eq('is_active', true)
       .eq('status', 'ok')
-      .eq('evolution_apis.is_active', true);
+      .eq('evolution_apis.is_active', true)
+      .not('instance_apikey', 'is', null); // CRÍTICO: Só instâncias com apikey
 
     // Atribuição de usuário é OPCIONAL - apenas prioriza se preferUserBinding=true e usuário tem APIs atribuídas
     if (preferUserBinding && userId) {
@@ -273,16 +273,33 @@ export class EvolutionBalancer {
       };
     }
 
-    const { base_url, api_key } = instance.evolution_api;
+    const { base_url } = instance.evolution_api;
     const { instance_name } = instance;
+    
+    // CRÍTICO: Busca a apikey da instância (não a global)
+    const { data: instanceData } = await supabaseServiceRole
+      .from('evolution_instances')
+      .select('instance_apikey')
+      .eq('id', instance.id)
+      .single();
+    
+    const instanceApikey = instanceData?.instance_apikey;
+    
+    if (!instanceApikey) {
+      console.error(`❌ [BALANCEADOR] Instância ${instance_name} não possui instance_apikey`);
+      return {
+        success: false,
+        error: 'Instância não possui apikey configurada',
+        errorType: 'unknown',
+        httpStatus: 0,
+      };
+    }
 
     console.log(`✅ [BALANCEADOR] Instância selecionada: ${instance_name} (${base_url})`);
-    console.log(`📞 [BALANCEADOR] Preparando chamada para adicionar ${leadPhone} ao grupo ${groupId}`);
+    console.log(`📞 [BALANCEADOR] Preparando chamada DIRETA para Evolution API - Lead: ${leadPhone}, Grupo: ${groupId}`);
+    console.log(`🔑 [BALANCEADOR] Usando apikey da instância: ${instanceApikey.substring(0, 10)}...`);
 
-    // 2. Faz a chamada à Evolution API usando o serviço existente
-    // Mas precisamos usar a base_url da instância selecionada, não a global
-    // Para isso, vamos criar uma instância temporária do serviço ou modificar o método
-    
+    // SIMPLIFICADO: Faz request DIRETO para Evolution API
     let result: {
       success: boolean;
       error?: string;
@@ -293,23 +310,102 @@ export class EvolutionBalancer {
     };
 
     try {
-      console.log(`🔄 [BALANCEADOR] Chamando callEvolutionAddParticipants...`);
-      // Usa o método existente mas com a base_url específica
-      result = await this.callEvolutionAddParticipants(
-        base_url,
-        api_key,
-        instance_name,
-        groupId,
-        [leadPhone]
-      );
-      console.log(`✅ [BALANCEADOR] callEvolutionAddParticipants concluído - Sucesso: ${result.success}`);
+      console.log(`🚀 [BALANCEADOR] Fazendo request DIRETO para Evolution API...`);
+      
+      // Normaliza URL
+      const normalizedBaseUrl = this.normalizeBaseUrl(base_url);
+      const url = `${normalizedBaseUrl}/group/updateParticipant/${instance_name}?groupJid=${encodeURIComponent(groupId)}`;
+      const finalUrl = url.replace(/([^:]\/)\/+/g, '$1');
+      
+      // Body conforme curl fornecido
+      const body = {
+        action: 'add',
+        participants: [leadPhone],
+      };
+      
+      console.log(`📤 [BALANCEADOR] URL: ${finalUrl}`);
+      console.log(`📤 [BALANCEADOR] Body:`, JSON.stringify(body));
+      
+      // Timeout de 30 segundos
+      const FETCH_TIMEOUT_MS = 30000;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+      }, FETCH_TIMEOUT_MS);
+      
+      const response = await fetch(finalUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: instanceApikey, // CRÍTICO: Usa apikey da instância
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      
+      clearTimeout(timeoutId);
+      
+      const responseText = await response.text();
+      let responseData: any = {};
+      
+      try {
+        responseData = JSON.parse(responseText);
+      } catch {
+        responseData = { message: responseText };
+      }
+      
+      // Tratamento de respostas
+      if (response.ok) {
+        result = {
+          success: true,
+          added: 1,
+          httpStatus: response.status,
+          responseData,
+        };
+      } else if (response.status === 403) {
+        result = {
+          success: false,
+          error: 'Rate limit (403)',
+          errorType: 'rate_limit',
+          added: 0,
+          httpStatus: 403,
+          responseData,
+        };
+      } else if (response.status === 400) {
+        const errorMsg = responseData?.message || responseText || 'Bad request';
+        const isConnectionClosed = errorMsg.toLowerCase().includes('connection closed');
+        
+        result = {
+          success: false,
+          error: isConnectionClosed ? 'Connection Closed' : errorMsg,
+          errorType: isConnectionClosed ? 'connection_closed' : 'bad_request',
+          added: 0,
+          httpStatus: 400,
+          responseData,
+        };
+      } else {
+        result = {
+          success: false,
+          error: responseData?.message || `Erro HTTP ${response.status}`,
+          errorType: 'unknown',
+          added: 0,
+          httpStatus: response.status,
+          responseData,
+        };
+      }
+      
+      console.log(`✅ [BALANCEADOR] Request concluído - Sucesso: ${result.success}, Status: ${result.httpStatus}`);
     } catch (error: any) {
-      console.error(`❌ [BALANCEADOR] Erro ao chamar callEvolutionAddParticipants:`, error);
+      console.error(`❌ [BALANCEADOR] Erro ao fazer request:`, error);
+      
+      const isTimeout = error?.name === 'AbortError' || error?.message?.toLowerCase().includes('timeout');
+      
       result = {
         success: false,
-        error: error?.message || 'Erro desconhecido',
+        error: isTimeout ? 'Timeout na requisição' : (error?.message || 'Erro desconhecido'),
         errorType: 'unknown',
         httpStatus: 0,
+        responseData: { error: error?.message },
       };
     }
 
