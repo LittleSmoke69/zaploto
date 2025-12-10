@@ -74,17 +74,17 @@ export async function getUserEvolutionApi(userId: string): Promise<{
     }
 
     // Se não tem API atribuída, busca a primeira API ativa do sistema
-      const { data: systemApi } = await supabaseServiceRole
-        .from('evolution_apis')
-        .select('base_url, api_key_global')
-        .eq('is_active', true)
-        .limit(1)
-        .single();
+    const { data: systemApi } = await supabaseServiceRole
+      .from('evolution_apis')
+      .select('base_url, api_key_global')
+      .eq('is_active', true)
+      .limit(1)
+      .single();
 
     if (systemApi) {
       return {
         baseUrl: systemApi.base_url,
-        apiKey: systemApi.api_key,
+        apiKey: systemApi.api_key_global, // CRÍTICO: Usa api_key_global
       };
     }
 
