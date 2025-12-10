@@ -35,6 +35,13 @@ export class EvolutionApiSelector {
       }
 
       console.log(`✅ [SELECTOR] Encontradas ${apis.length} Evolution API(s) ativa(s):`, apis.map(a => a.name));
+      
+      // Log detalhado das APIs encontradas (sem mostrar as keys completas)
+      apis.forEach(api => {
+        const hasApiKey = !!api.api_key_global && typeof api.api_key_global === 'string' && api.api_key_global.trim().length > 0;
+        const apiKeyLength = api.api_key_global ? api.api_key_global.length : 0;
+        console.log(`📋 [SELECTOR] API: ${api.name}, Base URL: ${api.base_url}, Tem API Key: ${hasApiKey}, Key Length: ${apiKeyLength}`);
+      });
 
       // Conta quantas instâncias cada API já tem
       const apiInstanceCounts = await Promise.all(
@@ -62,11 +69,24 @@ export class EvolutionApiSelector {
 
       console.log(`✅ Evolution API selecionada: ${selected.api.name} (${selected.instanceCount} instâncias existentes)`);
 
+      // VALIDAÇÃO CRÍTICA: Verifica se api_key_global está presente e não é null/undefined
+      if (!selected.api.api_key_global || typeof selected.api.api_key_global !== 'string' || selected.api.api_key_global.trim().length === 0) {
+        console.error(`❌ [SELECTOR] API key global vazia ou inválida para Evolution API: ${selected.api.name}`);
+        // Retorna null para que o código acima tente a próxima API (se houver)
+        // Se for a única API, o erro será tratado no código chamador
+        return null;
+      }
+
+      const apiKeyPreview = selected.api.api_key_global.length > 10 
+        ? `${selected.api.api_key_global.substring(0, 10)}...${selected.api.api_key_global.substring(selected.api.api_key_global.length - 4)}`
+        : '***';
+      console.log(`🔑 [SELECTOR] API key global validada (preview: ${apiKeyPreview}, length: ${selected.api.api_key_global.length})`);
+
       return {
         id: selected.api.id,
         name: selected.api.name,
         base_url: selected.api.base_url,
-        api_key: selected.api.api_key_global, // CRÍTICO: Retorna api_key_global
+        api_key: selected.api.api_key_global.trim(), // CRÍTICO: Retorna api_key_global e remove espaços
       };
     } catch (error) {
       console.error('Erro ao selecionar Evolution API:', error);

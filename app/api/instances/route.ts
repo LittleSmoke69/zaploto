@@ -211,12 +211,17 @@ export async function POST(req: NextRequest) {
             integration: 'WHATSAPP-BAILEYS',
           };
 
+          // Log detalhado antes da requisição
           console.log(`🔄 [INSTÂNCIA] Fazendo request para Evolution API: ${requestUrl}`);
           console.log(`📤 [INSTÂNCIA] Headers enviados:`, {
             'Content-Type': requestHeaders['Content-Type'],
             'apikey': this.apiKeyPreview, // Mostra apenas preview por segurança
+            'apikey-length': this.masterKey.length, // Comprimento para debug
           });
           console.log(`📤 [INSTÂNCIA] Body enviado:`, requestBody);
+          console.log(`📤 [INSTÂNCIA] API Name: ${this.apiName}`);
+          console.log(`📤 [INSTÂNCIA] Master Key está definida: ${!!this.masterKey}`);
+          console.log(`📤 [INSTÂNCIA] Master Key não está vazia: ${this.masterKey.length > 0}`);
 
           const response = await fetch(requestUrl, {
             method: 'POST',
@@ -256,10 +261,30 @@ export async function POST(req: NextRequest) {
 
             // Mensagem mais amigável para 403 Forbidden
             if (response.status === 403) {
-              throw new Error(
-                `Acesso negado pela Evolution API (403 Forbidden). Verifique se a API key está correta e tem permissões para criar instâncias. ` +
-                `API: ${this.apiName}, URL: ${this.baseUrl}`
-              );
+              const detailedMessage = 
+                `Acesso negado pela Evolution API (403 Forbidden). ` +
+                `Possíveis causas:\n` +
+                `1. API key incorreta ou vazia no banco de dados (campo api_key_global)\n` +
+                `2. API key sem permissões para criar instâncias\n` +
+                `3. Evolution API bloqueando requisições da origem (CORS/IP whitelist)\n` +
+                `4. Evolution API não está acessível ou está bloqueando o Netlify\n\n` +
+                `Informações de debug:\n` +
+                `- API: ${this.apiName}\n` +
+                `- URL: ${this.baseUrl}\n` +
+                `- API Key length: ${this.masterKey.length}\n` +
+                `- API Key preview: ${this.apiKeyPreview}`;
+              
+              console.error(`❌ [INSTÂNCIA] 403 Forbidden - Detalhes:`, {
+                apiName: this.apiName,
+                baseUrl: this.baseUrl,
+                apiKeyLength: this.masterKey.length,
+                apiKeyPreview: this.apiKeyPreview,
+                requestUrl: requestUrl,
+                requestBody: requestBody,
+                errorDetails,
+              });
+              
+              throw new Error(detailedMessage);
             }
 
             throw new Error(errorMessage);
