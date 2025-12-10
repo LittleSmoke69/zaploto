@@ -159,46 +159,109 @@ export async function POST(req: NextRequest) {
     
     console.log(`✅ [INSTÂNCIA] Evolution API selecionada: ${selectedApi.name} (${selectedApi.base_url})`);
 
+    // VALIDAÇÃO CRÍTICA: Verifica se a API key está presente e válida
+    if (!selectedApi.api_key || typeof selectedApi.api_key !== 'string' || selectedApi.api_key.trim().length === 0) {
+      console.error(`❌ [INSTÂNCIA] API key inválida ou vazia para Evolution API ${selectedApi.name}`);
+      return errorResponse(
+        `API key não configurada para a Evolution API "${selectedApi.name}". Configure a API key no painel admin.`,
+        400
+      );
+    }
+
+    // Log de validação (sem mostrar a key completa por segurança)
+    const apiKeyPreview = selectedApi.api_key.length > 10 
+      ? `${selectedApi.api_key.substring(0, 10)}...${selectedApi.api_key.substring(selectedApi.api_key.length - 4)}`
+      : '***';
+    console.log(`🔑 [INSTÂNCIA] API key validada (preview: ${apiKeyPreview}, length: ${selectedApi.api_key.length})`);
+
     const apiRecord = { id: selectedApi.id };
 
     const fullNumber = `55${phoneNumber}`;
 
+    // Normaliza a URL base (remove barras duplas e finais)
+    const normalizeBaseUrl = (baseUrl: string): string => {
+      if (!baseUrl) return baseUrl;
+      let normalized = baseUrl.trim();
+      normalized = normalized.replace(/\/+$/, ''); // Remove barras finais
+      normalized = normalized.replace(/([^:]\/)\/+/g, '$1'); // Remove barras duplas (preservando ://)
+      return normalized;
+    };
+
+    const normalizedBaseUrl = normalizeBaseUrl(selectedApi.base_url);
+    console.log(`🔗 [INSTÂNCIA] Base URL original: ${selectedApi.base_url}`);
+    console.log(`🔗 [INSTÂNCIA] Base URL normalizada: ${normalizedBaseUrl}`);
+
     // Cria instância na Evolution API selecionada pelo balanceador
     const tempEvolutionService = {
-      baseUrl: selectedApi.base_url,
-      masterKey: selectedApi.api_key, // api_key contém o valor de api_key_global
+      baseUrl: normalizedBaseUrl,
+      masterKey: selectedApi.api_key.trim(), // Remove espaços e garante string limpa
+      apiKeyPreview: apiKeyPreview, // Preview para logs
+      apiName: selectedApi.name, // Nome da API para logs de erro
       async createInstance(name: string, number: string, qrcode: boolean = true) {
         try {
-          console.log(`🔄 [INSTÂNCIA] Fazendo request para Evolution API: ${this.baseUrl}/instance/create`);
-          const response = await fetch(`${this.baseUrl}/instance/create`, {
+          const requestUrl = `${this.baseUrl}/instance/create`;
+          const requestHeaders = {
+            'Content-Type': 'application/json',
+            apikey: this.masterKey,
+          };
+          const requestBody = {
+            instanceName: name,
+            qrcode,
+            number,
+            integration: 'WHATSAPP-BAILEYS',
+          };
+
+          console.log(`🔄 [INSTÂNCIA] Fazendo request para Evolution API: ${requestUrl}`);
+          console.log(`📤 [INSTÂNCIA] Headers enviados:`, {
+            'Content-Type': requestHeaders['Content-Type'],
+            'apikey': this.apiKeyPreview, // Mostra apenas preview por segurança
+          });
+          console.log(`📤 [INSTÂNCIA] Body enviado:`, requestBody);
+
+          const response = await fetch(requestUrl, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              apikey: this.masterKey,
-            },
-            body: JSON.stringify({
-              instanceName: name,
-              qrcode,
-              number,
-              integration: 'WHATSAPP-BAILEYS',
-            }),
+            headers: requestHeaders,
+            body: JSON.stringify(requestBody),
           });
 
           if (!response.ok) {
             let errorMessage = `Erro HTTP ${response.status}: ${response.statusText}`;
+            let errorDetails: any = {};
+            
             try {
               const errorData = await response.json();
               errorMessage = errorData.message || errorData.error || errorMessage;
+              errorDetails = errorData;
             } catch {
               // Se não conseguir parsear JSON, tenta ler como texto
               try {
                 const errorText = await response.text();
                 errorMessage = errorText || errorMessage;
+                errorDetails = { raw: errorText };
               } catch {
                 // Mantém a mensagem padrão
               }
             }
+
+            // Log detalhado do erro
             console.error(`❌ [INSTÂNCIA] Evolution API retornou erro: ${errorMessage}`);
+            console.error(`❌ [INSTÂNCIA] Detalhes do erro:`, {
+              status: response.status,
+              statusText: response.statusText,
+              url: requestUrl,
+              apiKeyPreview: this.apiKeyPreview,
+              apiKeyLength: this.masterKey.length,
+              errorDetails,
+            });
+
+            // Mensagem mais amigável para 403 Forbidden
+            if (response.status === 403) {
+              throw new Error(
+                `Acesso negado pela Evolution API (403 Forbidden). Verifique se a API key está correta e tem permissões para criar instâncias. ` +
+                `API: ${this.apiName}, URL: ${this.baseUrl}`
+              );
+            }
+
             throw new Error(errorMessage);
           }
 
@@ -269,10 +332,11 @@ export async function POST(req: NextRequest) {
       // Tenta deletar na Evolution se já existe no banco
       try {
         if (evolutionData.hash) {
-          const deleteResponse = await fetch(`${selectedApi.base_url}/instance/delete/${instanceName}`, {
+          const deleteUrl = `${normalizedBaseUrl}/instance/delete/${instanceName}`;
+          const deleteResponse = await fetch(deleteUrl, {
             method: 'DELETE',
              headers: {
-               apikey: selectedApi.api_key, // api_key contém o valor de api_key_global
+               apikey: selectedApi.api_key.trim(), // api_key contém o valor de api_key_global
              },
           });
           if (!deleteResponse.ok) {
@@ -320,10 +384,11 @@ export async function POST(req: NextRequest) {
       try {
         if (evolutionData.hash) {
           // Cria função temporária para deletar
-          const deleteResponse = await fetch(`${selectedApi.base_url}/instance/delete/${instanceName}`, {
+          const deleteUrl = `${normalizedBaseUrl}/instance/delete/${instanceName}`;
+          const deleteResponse = await fetch(deleteUrl, {
             method: 'DELETE',
              headers: {
-               apikey: selectedApi.api_key, // api_key contém o valor de api_key_global
+               apikey: selectedApi.api_key.trim(), // api_key contém o valor de api_key_global
              },
           });
           if (!deleteResponse.ok) {
