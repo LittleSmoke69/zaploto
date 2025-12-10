@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { requireAuth } from '@/lib/middleware/auth';
 import { successResponse, errorResponse, serverErrorResponse } from '@/lib/utils/response';
 import { supabaseServiceRole } from '@/lib/services/supabase-service';
+import { checkInstanceAccess } from '@/lib/utils/instance-access';
 
 /**
  * POST /api/groups/extract-contacts - Extrai contatos de um grupo específico
@@ -20,7 +21,6 @@ export async function POST(req: NextRequest) {
     }
 
     // Verifica se o usuário tem acesso à instância
-    const { checkInstanceAccess } = await import('@/lib/utils/instance-access');
     const hasAccess = await checkInstanceAccess(userId, instanceName);
     if (!hasAccess) {
       return errorResponse('Acesso negado. Você não tem permissão para acessar esta instância.', 403);
@@ -34,7 +34,6 @@ export async function POST(req: NextRequest) {
         evolution_apis!inner (
           id,
           base_url,
-          api_key,
           is_active
         )
       `)
@@ -43,17 +42,45 @@ export async function POST(req: NextRequest) {
       .eq('evolution_apis.is_active', true)
       .single();
 
-    if (instanceError || !instance) {
+    if (instanceError) {
+      console.error(`❌ [EXTRACT-CONTACTS] Erro ao buscar instância: ${instanceName}`, {
+        error: instanceError,
+        code: instanceError.code,
+        message: instanceError.message,
+        details: instanceError.details,
+        hint: instanceError.hint
+      });
       return errorResponse('Instância não encontrada', 404);
+    }
+
+    if (!instance) {
+      console.error(`❌ [EXTRACT-CONTACTS] Instância não encontrada: ${instanceName} (sem dados retornados)`);
+      return errorResponse('Instância não encontrada', 404);
+    }
+
+    console.log(`✅ [EXTRACT-CONTACTS] Instância encontrada: ${instanceName}`, {
+      instanceId: instance.id,
+      hasApikey: !!instance.apikey,
+      hasEvolutionApi: !!instance.evolution_apis
+    });
+
+    // CRÍTICO: Usa a apikey da instância (não a global)
+    const instanceApikey = instance.apikey;
+    
+    if (!instanceApikey) {
+      console.error(`❌ [EXTRACT-CONTACTS] Instância ${instanceName} não possui apikey`);
+      return errorResponse('Instância sem apikey configurada', 404);
     }
 
     const evolutionApi = Array.isArray(instance.evolution_apis) 
       ? instance.evolution_apis[0] 
       : instance.evolution_apis;
 
-    if (!evolutionApi?.api_key) {
-      return errorResponse('Instância sem API key configurada', 404);
+    if (!evolutionApi?.base_url) {
+      return errorResponse('Evolution API sem base_url configurada', 404);
     }
+
+    console.log(`📋 [EXTRACT-CONTACTS] Extraindo contatos do grupo ${groupId} da instância ${instanceName} usando apikey da instância`);
 
     // Busca grupos com participantes
     const url = `${evolutionApi.base_url}/group/fetchAllGroups/${instanceName}?getParticipants=true`;
@@ -72,7 +99,7 @@ export async function POST(req: NextRequest) {
     const PER_TRY_TIMEOUT = 180_000; // 3 minutos
     const response = await fetchWithTimeout(
       url,
-      { method: 'GET', headers: { apikey: evolutionApi.api_key } },
+      { method: 'GET', headers: { apikey: instanceApikey } }, // CRÍTICO: Usa apikey da instância
       PER_TRY_TIMEOUT
     );
 
