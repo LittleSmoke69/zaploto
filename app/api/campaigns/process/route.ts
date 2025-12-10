@@ -103,18 +103,19 @@ export async function POST(req: NextRequest) {
       console.log(`🔄 [CAMPANHA ${campaignId}] Iniciando nova campanha com ${activeCount} campanha(s) já ativa(s). O balanceador distribuirá a carga entre todas as Evolution APIs.`);
     }
 
-    // Atualiza status da campanha para 'running' IMEDIATAMENTE
-    // OTIMIZAÇÃO: Atualiza status antes de iniciar processamento para feedback visual rápido
-    console.log(`⚡ [CAMPANHA ${campaignId}] Atualizando status para 'running' IMEDIATAMENTE...`);
+    // IMPORTANTE: Mantém status 'pending' para mostrar animação de "iniciando campanha"
+    // O status só muda para 'running' após o primeiro job ser processado com sucesso
+    console.log(`⚡ [CAMPANHA ${campaignId}] Mantendo status 'pending' para mostrar animação. Processamento iniciando...`);
+    
+    // Registra o started_at quando realmente inicia o processamento
     await supabaseServiceRole
       .from('campaigns')
       .update({
-        status: 'running',
         started_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
       .eq('id', campaignId);
-    console.log(`✅ [CAMPANHA ${campaignId}] Status atualizado para 'running'. Processamento iniciando...`);
+    console.log(`✅ [CAMPANHA ${campaignId}] Processamento iniciando. Status permanece 'pending' até primeiro job...`);
 
     // CRÍTICO: Processa TODOS os jobs sequencialmente no mesmo contexto HTTP
     // Na Netlify, funções serverless terminam após retornar resposta HTTP
@@ -264,17 +265,24 @@ export async function POST(req: NextRequest) {
         
         // CRÍTICO: Atualiza progresso no banco APÓS CADA JOB para feedback em tempo real
         // O front-end faz polling a cada 1 segundo, então verá as atualizações imediatamente
+        // IMPORTANTE: Primeiro job muda status de 'pending' para 'running' (remove animação)
+        const newStatus = jobNumber === 1 ? 'running' : 'running';
+        
+        if (jobNumber === 1) {
+          console.log(`🎬 [CAMPANHA ${campaignId}] Primeiro job processado! Mudando status de 'pending' para 'running' - animação será removida`);
+        }
+        
         await supabaseServiceRole
           .from('campaigns')
           .update({
             processed_contacts: processed,
             failed_contacts: failed,
-            status: 'running', // Mantém como 'running' durante processamento
+            status: newStatus, // Primeiro job muda para 'running', outros mantêm 'running'
             updated_at: new Date().toISOString(),
           })
           .eq('id', campaignId);
         
-        console.log(`📊 [CAMPANHA ${campaignId}] Job ${jobNumber}: Progresso atualizado no banco - Processados: ${processed}, Falhas: ${failed}, Total: ${jobs.length}`);
+        console.log(`📊 [CAMPANHA ${campaignId}] Job ${jobNumber}: Progresso atualizado no banco - Processados: ${processed}, Falhas: ${failed}, Total: ${jobs.length}, Status: ${newStatus}`);
         
         // Delay APÓS o request (antes do próximo) - mas não no último job
         if (i < jobs.length - 1) {
