@@ -117,10 +117,42 @@ export async function POST(req: NextRequest) {
       .eq('id', campaignId);
     console.log(`✅ [CAMPANHA ${campaignId}] Processamento iniciando. Status permanece 'pending' até primeiro job...`);
 
-    // CRÍTICO: Processa TODOS os jobs sequencialmente no mesmo contexto HTTP
-    // Na Netlify, funções serverless terminam após retornar resposta HTTP
-    // Então precisamos processar tudo ANTES de retornar a resposta
-    console.log(`🚀 [CAMPANHA ${campaignId}] Processando TODOS os ${jobs.length} jobs sequencialmente no contexto HTTP...`);
+    // CRÍTICO: Retorna resposta HTTP imediata e processa jobs em background
+    // Isso evita timeout 504 na Netlify (limite de 10s para funções serverless)
+    // O processamento continua em background mesmo após retornar a resposta
+    console.log(`🚀 [CAMPANHA ${campaignId}] Retornando resposta HTTP imediata e processando ${jobs.length} jobs em background...`);
+    
+    // Inicia processamento em background (não bloqueia a resposta HTTP)
+    processCampaignInBackground(campaignId, campaign, jobs, userId).catch((error) => {
+      console.error(`❌ [CAMPANHA ${campaignId}] Erro no processamento em background:`, error);
+    });
+    
+    // Retorna resposta imediata
+    return successResponse(
+      {
+        campaignId,
+        status: 'pending',
+        totalJobs: jobs.length,
+        message: 'Campanha iniciada. Processamento em andamento...',
+      },
+      'Campanha iniciada com sucesso'
+    );
+  } catch (err: any) {
+    return serverErrorResponse(err);
+  }
+}
+
+/**
+ * Processa campanha em background (não bloqueia resposta HTTP)
+ */
+async function processCampaignInBackground(
+  campaignId: string,
+  campaign: any,
+  jobs: Array<{ contactId: string; phone: string }>,
+  userId: string
+) {
+  try {
+    console.log(`🔄 [CAMPANHA ${campaignId}] Iniciando processamento em background de ${jobs.length} jobs...`);
     
     // Extrai informações necessárias
     const strategy = campaign.strategy || {};
@@ -160,6 +192,69 @@ export async function POST(req: NextRequest) {
     let failed = 0;
     
     for (let i = 0; i < jobs.length; i++) {
+      // CRÍTICO: Verifica se a campanha foi excluída antes de processar cada job
+      const { data: campaignCheck, error: checkError } = await supabaseServiceRole
+        .from('campaigns')
+        .select('id, status')
+        .eq('id', campaignId)
+        .single();
+      
+      // Se a campanha foi excluída ou não existe mais, para o processamento imediatamente
+      if (checkError || !campaignCheck) {
+        console.log(`🛑 [CAMPANHA ${campaignId}] Campanha foi excluída ou não existe mais. Parando processamento no job ${i + 1}/${jobs.length}`);
+        break; // Para o processamento imediatamente
+      }
+      
+      // Se a campanha foi marcada como failed, completed ou paused, para o processamento
+      if (campaignCheck.status === 'failed' || campaignCheck.status === 'completed') {
+        console.log(`🛑 [CAMPANHA ${campaignId}] Campanha foi finalizada (status: ${campaignCheck.status}). Parando processamento no job ${i + 1}/${jobs.length}`);
+        break; // Para o processamento imediatamente
+      }
+      
+      // Se a campanha está pausada, aguarda até ser retomada ou excluída
+      if (campaignCheck.status === 'paused') {
+        console.log(`⏸️ [CAMPANHA ${campaignId}] Campanha pausada. Aguardando retomada...`);
+        while (true) {
+          await new Promise((resolve) => setTimeout(resolve, 2000)); // Verifica a cada 2 segundos
+          
+          const { data: statusCheck } = await supabaseServiceRole
+            .from('campaigns')
+            .select('id, status')
+            .eq('id', campaignId)
+            .single();
+          
+          // Se foi excluída, para o processamento
+          if (!statusCheck) {
+            console.log(`🛑 [CAMPANHA ${campaignId}] Campanha foi excluída durante pausa. Parando processamento.`);
+            return; // Para o processamento imediatamente
+          }
+          
+          // Se foi finalizada, para o processamento
+          if (statusCheck.status === 'failed' || statusCheck.status === 'completed') {
+            console.log(`🛑 [CAMPANHA ${campaignId}] Campanha foi finalizada durante pausa (status: ${statusCheck.status}). Parando processamento.`);
+            break;
+          }
+          
+          // Se foi retomada, continua o processamento
+          if (statusCheck.status === 'running') {
+            console.log(`▶️ [CAMPANHA ${campaignId}] Campanha retomada. Continuando processamento.`);
+            break;
+          }
+        }
+        
+        // Verifica novamente se deve continuar após a pausa
+        const { data: finalCheck } = await supabaseServiceRole
+          .from('campaigns')
+          .select('id, status')
+          .eq('id', campaignId)
+          .single();
+        
+        if (!finalCheck || finalCheck.status === 'failed' || finalCheck.status === 'completed') {
+          console.log(`🛑 [CAMPANHA ${campaignId}] Campanha não pode continuar após pausa. Parando processamento.`);
+          break;
+        }
+      }
+      
       const job = jobs[i];
       const jobNumber = i + 1;
       const normalizedPhone = normalizePhoneNumber(job.phone);
@@ -272,15 +367,27 @@ export async function POST(req: NextRequest) {
           console.log(`🎬 [CAMPANHA ${campaignId}] Primeiro job processado! Mudando status de 'pending' para 'running' - animação será removida`);
         }
         
-        await supabaseServiceRole
+        // CRÍTICO: Verifica novamente se a campanha existe antes de atualizar
+        const { data: updateCheck } = await supabaseServiceRole
           .from('campaigns')
-          .update({
-            processed_contacts: processed,
-            failed_contacts: failed,
-            status: newStatus, // Primeiro job muda para 'running', outros mantêm 'running'
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', campaignId);
+          .select('id')
+          .eq('id', campaignId)
+          .single();
+        
+        if (updateCheck) {
+          await supabaseServiceRole
+            .from('campaigns')
+            .update({
+              processed_contacts: processed,
+              failed_contacts: failed,
+              status: newStatus, // Primeiro job muda para 'running', outros mantêm 'running'
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', campaignId);
+        } else {
+          console.warn(`⚠️ [CAMPANHA ${campaignId}] Campanha não encontrada ao atualizar progresso (foi excluída). Parando processamento.`);
+          break; // Para o processamento se a campanha foi excluída
+        }
         
         console.log(`📊 [CAMPANHA ${campaignId}] Job ${jobNumber}: Progresso atualizado no banco - Processados: ${processed}, Falhas: ${failed}, Total: ${jobs.length}, Status: ${newStatus}`);
         
@@ -312,16 +419,27 @@ export async function POST(req: NextRequest) {
           })
           .eq('id', job.contactId);
         
-        // CRÍTICO: Atualiza progresso no banco mesmo em caso de erro
-        await supabaseServiceRole
+        // CRÍTICO: Verifica novamente se a campanha existe antes de atualizar após erro
+        const { data: errorUpdateCheck } = await supabaseServiceRole
           .from('campaigns')
-          .update({
-            processed_contacts: processed,
-            failed_contacts: failed,
-            status: 'running', // Mantém como 'running' durante processamento
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', campaignId);
+          .select('id')
+          .eq('id', campaignId)
+          .single();
+        
+        if (errorUpdateCheck) {
+          await supabaseServiceRole
+            .from('campaigns')
+            .update({
+              processed_contacts: processed,
+              failed_contacts: failed,
+              status: 'running', // Mantém como 'running' durante processamento
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', campaignId);
+        } else {
+          console.warn(`⚠️ [CAMPANHA ${campaignId}] Campanha não encontrada ao atualizar progresso após erro (foi excluída). Parando processamento.`);
+          break; // Para o processamento se a campanha foi excluída
+        }
         
         console.log(`📊 [CAMPANHA ${campaignId}] Job ${jobNumber}: Progresso atualizado após erro - Processados: ${processed}, Falhas: ${failed}, Total: ${jobs.length}`);
         
@@ -335,6 +453,28 @@ export async function POST(req: NextRequest) {
     }
     
     // Finaliza campanha
+    // Verifica se a campanha ainda existe antes de finalizar
+    const { data: finalCheck } = await supabaseServiceRole
+      .from('campaigns')
+      .select('id, status')
+      .eq('id', campaignId)
+      .single();
+    
+    if (!finalCheck) {
+      console.warn(`⚠️ [CAMPANHA ${campaignId}] Campanha foi excluída durante processamento. Não é possível finalizar.`);
+      return successResponse(
+        {
+          campaignId,
+          status: 'failed',
+          totalJobs: jobs.length,
+          processed,
+          failed,
+          message: 'Campanha foi excluída durante processamento',
+        },
+        'Processamento interrompido: campanha foi excluída'
+      );
+    }
+    
     // Status: 'failed' apenas se TODOS os jobs falharam, caso contrário 'completed'
     const finalStatus = failed === jobs.length && processed === 0 ? 'failed' : 'completed';
     const totalProcessed = processed + failed;
@@ -376,20 +516,32 @@ export async function POST(req: NextRequest) {
     }
     
     console.log(`✅ [CAMPANHA ${campaignId}] Processamento completo: ${processed} sucessos, ${failed} falhas, Status: ${finalStatus}`);
-    
-    return successResponse(
-      {
-        campaignId,
-        status: finalStatus,
-        totalJobs: jobs.length,
-        processed,
-        failed,
-        message: `Campanha finalizada: ${processed} sucessos, ${failed} falhas`,
-      },
-      'Campanha processada com sucesso'
-    );
   } catch (err: any) {
-    return serverErrorResponse(err);
+    console.error(`❌ [CAMPANHA ${campaignId}] Erro fatal no processamento em background:`, err);
+    console.error('Stack trace:', err?.stack);
+    
+    // Tenta marcar campanha como failed em caso de erro fatal
+    try {
+      const { data: campaignExists } = await supabaseServiceRole
+        .from('campaigns')
+        .select('id')
+        .eq('id', campaignId)
+        .single();
+
+      if (campaignExists) {
+        await supabaseServiceRole
+          .from('campaigns')
+          .update({
+            status: 'failed',
+            updated_at: new Date().toISOString(),
+            completed_at: new Date().toISOString(),
+          })
+          .eq('id', campaignId);
+        console.log(`✅ [CAMPANHA ${campaignId}] Campanha marcada como failed devido a erro fatal`);
+      }
+    } catch (updateError: any) {
+      console.error(`❌ [CAMPANHA ${campaignId}] Erro ao atualizar status da campanha para failed:`, updateError);
+    }
   }
 }
 
