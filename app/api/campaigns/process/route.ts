@@ -461,26 +461,26 @@ async function processCampaignAsync(
       console.log(`📞 [CAMPANHA ${campaignId}] Job ${jobNumber}/${totalJobs}: Telefone original: ${originalPhone} | Normalizado: ${normalizedPhone}`);
       console.log(`📞 [CAMPANHA ${campaignId}] Job ${jobNumber}/${totalJobs}: Adicionando ${normalizedPhone} ao grupo ${groupId}`);
       
+      // Declara result antes do while para estar disponível em todo o escopo
+      let result: {
+        success: boolean;
+        error?: string;
+        errorType?: 'rate_limit' | 'bad_request' | 'connection_closed' | 'unknown';
+        added?: number;
+        httpStatus?: number;
+        responseData?: any;
+        instanceUsed?: any;
+      } = {
+        success: false,
+        error: 'Erro desconhecido',
+        errorType: 'unknown',
+        added: 0,
+        httpStatus: 0,
+      };
+      
       while (attempts < maxAttempts && !success) {
         attempts++;
         const addStartTime = Date.now();
-        
-        // Declara result antes do try para estar disponível no catch
-        let result: {
-          success: boolean;
-          error?: string;
-          errorType?: 'rate_limit' | 'bad_request' | 'connection_closed' | 'unknown';
-          added?: number;
-          httpStatus?: number;
-          responseData?: any;
-          instanceUsed?: any;
-        } = {
-          success: false,
-          error: 'Erro desconhecido',
-          errorType: 'unknown',
-          added: 0,
-          httpStatus: 0,
-        };
         
         try {
           console.log(`🔄 [CAMPANHA ${campaignId}] Job ${jobNumber}: Tentativa ${attempts}/${maxAttempts} - Fazendo request DIRETO para Evolution API...`);
@@ -493,14 +493,6 @@ async function processCampaignAsync(
           });
           
           if (!instance || !instance.evolution_api) {
-            // Cria resultado de erro para tratamento
-            result = {
-              success: false,
-              error: 'Nenhuma instância disponível',
-              errorType: 'unknown',
-              added: 0,
-              httpStatus: 0,
-            };
             throw new Error('Nenhuma instância disponível');
           }
           
@@ -514,14 +506,6 @@ async function processCampaignAsync(
           const instanceApikey = instanceData?.apikey;
           
           if (!instanceApikey) {
-            // Cria resultado de erro para tratamento
-            result = {
-              success: false,
-              error: 'Instância sem apikey configurada',
-              errorType: 'unknown',
-              added: 0,
-              httpStatus: 0,
-            };
             throw new Error('Instância sem apikey configurada');
           }
           
@@ -566,17 +550,7 @@ async function processCampaignAsync(
             responseData = { message: responseText };
           }
           
-          // Cria resultado no formato esperado
-          let result: {
-            success: boolean;
-            error?: string;
-            errorType?: 'rate_limit' | 'bad_request' | 'connection_closed' | 'unknown';
-            added?: number;
-            httpStatus?: number;
-            responseData?: any;
-            instanceUsed?: any;
-          };
-          
+          // Atualiza resultado no formato esperado
           if (response.ok) {
             result = {
               success: true,
@@ -752,6 +726,39 @@ async function processCampaignAsync(
           const addDuration = Date.now() - addStartTime;
           console.error(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: Exceção ao fazer request (tentativa ${attempts}/${maxAttempts}):`, addError);
           console.error(`❌ [CAMPANHA ${campaignId}] Stack trace:`, addError?.stack);
+          
+          // Trata erros de instância não disponível ou sem apikey
+          const errorMessage = addError?.message || '';
+          if (errorMessage.includes('Nenhuma instância disponível') || errorMessage.includes('sem apikey')) {
+            result = {
+              success: false,
+              error: errorMessage,
+              errorType: 'unknown',
+              added: 0,
+              httpStatus: 0,
+            };
+            
+            // Se não for última tentativa, faz retry
+            if (attempts < maxAttempts) {
+              const waitMs = Math.max(getDelay() || 2000, 2000);
+              console.log(`⚠️ [CAMPANHA ${campaignId}] Job ${jobNumber}: ${errorMessage}. Retentando em ${(waitMs / 1000).toFixed(1)}s (tentativa ${attempts}/${maxAttempts})`);
+              await new Promise(resolve => setTimeout(resolve, waitMs));
+              continue; // Tenta novamente
+            } else {
+              // Última tentativa falhou
+              failed++;
+              console.error(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: ${errorMessage} após ${maxAttempts} tentativas. Telefone: ${normalizedPhone}`);
+              await rateLimitService.recordLeadUsage(campaignId, 1, false);
+              await supabaseServiceRole
+                .from('searches')
+                .update({
+                  status: 'erro',
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('id', job.contactId);
+              break; // Não tenta mais
+            }
+          }
           
           // Trata AbortError (timeout ou abort na Netlify)
           const isAbortError = addError?.name === 'AbortError' || addError?.code === 20;
