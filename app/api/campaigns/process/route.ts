@@ -239,18 +239,44 @@ async function processCampaignQueue(
         throw new Error('Nenhuma instância disponível');
       }
       
-      // Busca apikey da instância
-      const { data: instanceData } = await supabaseServiceRole
+      console.log(`🔍 [CAMPANHA ${campaignId}] Job ${jobNumber}: Instância selecionada:`, {
+        instanceId: instance.id,
+        instanceName: instance.instance_name,
+        evolutionApiId: instance.evolution_api_id,
+        evolutionApiBaseUrl: instance.evolution_api.base_url,
+      });
+      
+      // Busca apikey da instância da tabela evolution_instances
+      const { data: instanceData, error: instanceDataError } = await supabaseServiceRole
         .from('evolution_instances')
-        .select('apikey')
+        .select('apikey, instance_name')
         .eq('id', instance.id)
         .single();
+      
+      if (instanceDataError) {
+        console.error(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: Erro ao buscar apikey da instância:`, instanceDataError);
+        throw new Error(`Erro ao buscar apikey: ${instanceDataError.message}`);
+      }
       
       const instanceApikey = instanceData?.apikey;
       
       if (!instanceApikey) {
+        console.error(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: Instância sem apikey configurada na tabela evolution_instances`);
         throw new Error('Instância sem apikey configurada');
       }
+      
+      // Log da apikey (mascarada por segurança - mostra apenas primeiros e últimos caracteres)
+      const maskedApikey = instanceApikey.length > 10 
+        ? `${instanceApikey.substring(0, 6)}...${instanceApikey.substring(instanceApikey.length - 4)}`
+        : '***';
+      
+      console.log(`🔑 [CAMPANHA ${campaignId}] Job ${jobNumber}: Apikey obtida da tabela evolution_instances:`, {
+        instanceId: instance.id,
+        instanceName: instanceData.instance_name,
+        apikeyLength: instanceApikey.length,
+        apikeyMasked: maskedApikey,
+        source: 'evolution_instances.apikey',
+      });
       
       // Faz request DIRETO para Evolution API
       const normalizedBaseUrl = instance.evolution_api.base_url.replace(/\/+$/, '').replace(/([^:]\/)\/+/g, '$1');
@@ -262,7 +288,16 @@ async function processCampaignQueue(
         participants: [normalizedPhone],
       };
       
-      console.log(`📤 [CAMPANHA ${campaignId}] Job ${jobNumber}: Fazendo request para Evolution API...`);
+      console.log(`📤 [CAMPANHA ${campaignId}] Job ${jobNumber}: Request para Evolution API:`, {
+        method: 'POST',
+        url: finalUrl,
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: maskedApikey, // Log com apikey mascarada
+        },
+        body: requestBody,
+        timeout: '25000ms',
+      });
       
       // Timeout de 25 segundos
       const FETCH_TIMEOUT_MS = 25000;
@@ -292,10 +327,19 @@ async function processCampaignQueue(
         responseData = { message: responseText };
       }
       
+      // Log da resposta da Evolution API
+      console.log(`📥 [CAMPANHA ${campaignId}] Job ${jobNumber}: Resposta da Evolution API:`, {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok,
+        responseData: responseData,
+        responseTextLength: responseText.length,
+      });
+      
       // Processa resultado
       if (response.ok) {
         processed++;
-        console.log(`✅ [CAMPANHA ${campaignId}] Job ${jobNumber}: SUCESSO`);
+        console.log(`✅ [CAMPANHA ${campaignId}] Job ${jobNumber}: SUCESSO - Contato ${normalizedPhone} adicionado ao grupo ${groupId}`);
         
         await rateLimitService.recordLeadUsage(campaignId, 1, true);
         await supabaseServiceRole
@@ -308,7 +352,7 @@ async function processCampaignQueue(
           .eq('id', job.contactId);
       } else {
         failed++;
-        console.log(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: FALHA - ${response.status} ${responseData.message || ''}`);
+        console.log(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: FALHA - Status: ${response.status}, Mensagem: ${responseData.message || responseText || 'Sem mensagem'}`);
         
         await rateLimitService.recordLeadUsage(campaignId, 1, false);
         await supabaseServiceRole
