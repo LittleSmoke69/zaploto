@@ -138,17 +138,22 @@ async function processCampaignQueue(
     return `55${cleaned}`;
   };
 
-  // Função para calcular delay
+  // Função para calcular delay (suporta segundos e minutos)
   const getDelay = (): number => {
     if (delayConfig.delayMode === 'random') {
       const min = Math.max(1, Number(delayConfig.randomMinSeconds) || 1);
       const max = Math.max(1, Number(delayConfig.randomMaxSeconds) || 1);
       const seconds = Math.floor(Math.random() * (max - min + 1)) + min;
-      return seconds * 1000;
+      const delayMs = seconds * 1000;
+      console.log(`🎲 [CAMPANHA ${campaignId}] Delay aleatório: ${seconds}s (${delayMs}ms)`);
+      return delayMs;
     } else {
       const value = Number(delayConfig.delayValue) || 0;
       const unit = delayConfig.delayUnit === 'minutes' ? 60 : 1;
-      return Math.max(1000, value * unit * 1000);
+      const seconds = value * unit;
+      const delayMs = Math.max(1000, seconds * 1000);
+      console.log(`⏱️ [CAMPANHA ${campaignId}] Delay configurado: ${value} ${delayConfig.delayUnit} = ${seconds}s (${delayMs}ms)`);
+      return delayMs;
     }
   };
 
@@ -387,7 +392,22 @@ async function processCampaignQueue(
         }
       }
 
-      // Atualiza progresso no banco APÓS CADA JOB
+      // Calcula delay para o próximo request (se não for o último job)
+      let nextRequestAt: string | null = null;
+      if (i < jobs.length - 1) {
+        const delay = getDelay();
+        const delayInSeconds = Math.floor(delay / 1000);
+        const delayInMinutes = Math.floor(delayInSeconds / 60);
+        const remainingSeconds = delayInSeconds % 60;
+        
+        // Calcula data/hora do próximo request
+        const nextRequestDate = new Date(Date.now() + delay);
+        nextRequestAt = nextRequestDate.toISOString();
+        
+        console.log(`⏳ [CAMPANHA ${campaignId}] Job ${jobNumber} concluído. Próximo request em ${delayInMinutes > 0 ? `${delayInMinutes}min ` : ''}${remainingSeconds}s (${delay}ms total)`);
+      }
+
+      // Atualiza progresso no banco APÓS CADA JOB (incluindo next_request_at)
       const { data: progressCheck } = await supabaseServiceRole
         .from('campaigns')
         .select('id')
@@ -395,27 +415,54 @@ async function processCampaignQueue(
         .single();
       
       if (progressCheck) {
+        const updateData: any = {
+          processed_contacts: processed,
+          failed_contacts: failed,
+          status: 'running',
+          updated_at: new Date().toISOString(),
+        };
+        
+        // Adiciona next_request_at se houver próximo job
+        if (nextRequestAt) {
+          updateData.next_request_at = nextRequestAt;
+        } else {
+          // Se for o último job, limpa next_request_at
+          updateData.next_request_at = null;
+        }
+        
         await supabaseServiceRole
           .from('campaigns')
-          .update({
-            processed_contacts: processed,
-            failed_contacts: failed,
-            status: 'running',
-            updated_at: new Date().toISOString(),
-          })
+          .update(updateData)
           .eq('id', campaignId);
       } else {
         console.warn(`⚠️ [CAMPANHA ${campaignId}] Campanha não encontrada ao atualizar progresso (foi excluída). Parando processamento.`);
         break;
       }
       
-      console.log(`📊 [CAMPANHA ${campaignId}] Job ${jobNumber}: Progresso atualizado - Processados: ${processed}, Falhas: ${failed}, Total: ${jobs.length}`);
+      console.log(`📊 [CAMPANHA ${campaignId}] Job ${jobNumber}: Progresso atualizado - Processados: ${processed}, Falhas: ${failed}, Total: ${jobs.length}${nextRequestAt ? `, Próximo request: ${new Date(nextRequestAt).toLocaleString('pt-BR')}` : ''}`);
 
       // Delay APÓS o request (antes do próximo) - mas não no último job
       if (i < jobs.length - 1) {
         const delay = getDelay();
-        console.log(`⏳ [CAMPANHA ${campaignId}] Job ${jobNumber} concluído. Aguardando ${delay}ms (${(delay/1000).toFixed(1)}s) antes do próximo...`);
+        console.log(`⏳ [CAMPANHA ${campaignId}] Aguardando ${delay}ms (${(delay/1000).toFixed(1)}s) antes do próximo request...`);
         await new Promise((resolve) => setTimeout(resolve, delay));
+        
+        // Limpa next_request_at após o delay (request será feito agora)
+        const { data: clearCheck } = await supabaseServiceRole
+          .from('campaigns')
+          .select('id')
+          .eq('id', campaignId)
+          .single();
+        
+        if (clearCheck) {
+          await supabaseServiceRole
+            .from('campaigns')
+            .update({
+              next_request_at: null, // Limpa porque o request será feito agora
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', campaignId);
+        }
       }
 
     } catch (error: any) {
@@ -453,6 +500,20 @@ async function processCampaignQueue(
         }
       }
 
+      // Calcula delay para o próximo request mesmo em caso de erro (se não for o último job)
+      let nextRequestAtError: string | null = null;
+      if (i < jobs.length - 1) {
+        const delay = getDelay();
+        const delayInSeconds = Math.floor(delay / 1000);
+        const delayInMinutes = Math.floor(delayInSeconds / 60);
+        const remainingSeconds = delayInSeconds % 60;
+        
+        const nextRequestDate = new Date(Date.now() + delay);
+        nextRequestAtError = nextRequestDate.toISOString();
+        
+        console.log(`⏳ [CAMPANHA ${campaignId}] Job ${jobNumber} falhou. Próximo request em ${delayInMinutes > 0 ? `${delayInMinutes}min ` : ''}${remainingSeconds}s`);
+      }
+
       // Atualiza progresso mesmo em caso de erro
       const { data: errorProgressCheck } = await supabaseServiceRole
         .from('campaigns')
@@ -461,14 +522,22 @@ async function processCampaignQueue(
         .single();
       
       if (errorProgressCheck) {
+        const updateData: any = {
+          processed_contacts: processed,
+          failed_contacts: failed,
+          status: 'running',
+          updated_at: new Date().toISOString(),
+        };
+        
+        if (nextRequestAtError) {
+          updateData.next_request_at = nextRequestAtError;
+        } else {
+          updateData.next_request_at = null;
+        }
+        
         await supabaseServiceRole
           .from('campaigns')
-          .update({
-            processed_contacts: processed,
-            failed_contacts: failed,
-            status: 'running',
-            updated_at: new Date().toISOString(),
-          })
+          .update(updateData)
           .eq('id', campaignId);
       } else {
         console.warn(`⚠️ [CAMPANHA ${campaignId}] Campanha não encontrada ao atualizar progresso após erro (foi excluída). Parando processamento.`);
@@ -478,8 +547,25 @@ async function processCampaignQueue(
       // Continua para o próximo job mesmo se este falhou
       if (i < jobs.length - 1) {
         const delay = getDelay();
-        console.log(`⏳ [CAMPANHA ${campaignId}] Job ${jobNumber} falhou. Aguardando ${delay}ms antes do próximo...`);
+        console.log(`⏳ [CAMPANHA ${campaignId}] Aguardando ${delay}ms antes do próximo request...`);
         await new Promise((resolve) => setTimeout(resolve, delay));
+        
+        // Limpa next_request_at após o delay
+        const { data: clearCheck } = await supabaseServiceRole
+          .from('campaigns')
+          .select('id')
+          .eq('id', campaignId)
+          .single();
+        
+        if (clearCheck) {
+          await supabaseServiceRole
+            .from('campaigns')
+            .update({
+              next_request_at: null,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', campaignId);
+        }
       }
     }
   }

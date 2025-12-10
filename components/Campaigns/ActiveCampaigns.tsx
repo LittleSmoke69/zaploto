@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState } from 'react';
-import { Pause, Play, Trash2, Clock, CheckCircle2, XCircle, History, ChevronDown, ChevronUp } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Pause, Play, Trash2, Clock, CheckCircle2, XCircle, History, ChevronDown, ChevronUp, Timer } from 'lucide-react';
 import { Campaign } from '@/hooks/useDashboardData';
 
 interface ActiveCampaignsProps {
@@ -44,6 +44,43 @@ const ActiveCampaigns: React.FC<ActiveCampaignsProps> = ({
     const isCompleted = campaign.status === 'completed';
     const isFailed = campaign.status === 'failed';
     const isPending = campaign.status === 'pending';
+    const isRunning = campaign.status === 'running';
+    
+    // Timer para próximo request
+    const [timeRemaining, setTimeRemaining] = useState<string>('');
+    
+    useEffect(() => {
+      if (!isRunning || isPaused || !campaign.next_request_at) {
+        setTimeRemaining('');
+        return;
+      }
+      
+      const updateTimer = () => {
+        const now = new Date().getTime();
+        const nextRequest = new Date(campaign.next_request_at!).getTime();
+        const diff = nextRequest - now;
+        
+        if (diff <= 0) {
+          setTimeRemaining('');
+          return;
+        }
+        
+        const totalSeconds = Math.floor(diff / 1000);
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        
+        if (minutes > 0) {
+          setTimeRemaining(`${minutes}min ${seconds}s`);
+        } else {
+          setTimeRemaining(`${seconds}s`);
+        }
+      };
+      
+      updateTimer();
+      const interval = setInterval(updateTimer, 1000);
+      
+      return () => clearInterval(interval);
+    }, [campaign.next_request_at, isRunning, isPaused]);
 
     return (
       <div
@@ -168,6 +205,18 @@ const ActiveCampaigns: React.FC<ActiveCampaignsProps> = ({
             <p className="text-sm font-bold text-red-600">{failedPercentage}%</p>
           </div>
         </div>
+
+        {/* Timer para próximo request */}
+        {isRunning && !isPaused && timeRemaining && (
+          <div className="mt-3 p-2 bg-blue-50 border border-blue-200 rounded-lg">
+            <div className="flex items-center gap-2 text-sm">
+              <Timer className="w-4 h-4 text-blue-600 animate-pulse" />
+              <span className="text-blue-700 font-medium">
+                Próximo request em: <span className="font-bold">{timeRemaining}</span>
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* Tempo */}
         <div className="mt-3 pt-3 border-t border-gray-200">

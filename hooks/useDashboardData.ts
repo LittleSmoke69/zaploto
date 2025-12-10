@@ -48,6 +48,7 @@ export interface Campaign {
   updated_at: string;
   started_at?: string | null;
   completed_at?: string | null;
+  next_request_at?: string | null;
 }
 
 export interface LogEntry {
