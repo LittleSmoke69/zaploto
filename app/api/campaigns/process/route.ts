@@ -262,15 +262,19 @@ export async function POST(req: NextRequest) {
             .eq('id', job.contactId);
         }
         
-        // Atualiza progresso no banco
+        // CRÍTICO: Atualiza progresso no banco APÓS CADA JOB para feedback em tempo real
+        // O front-end faz polling a cada 1 segundo, então verá as atualizações imediatamente
         await supabaseServiceRole
           .from('campaigns')
           .update({
             processed_contacts: processed,
             failed_contacts: failed,
+            status: 'running', // Mantém como 'running' durante processamento
             updated_at: new Date().toISOString(),
           })
           .eq('id', campaignId);
+        
+        console.log(`📊 [CAMPANHA ${campaignId}] Job ${jobNumber}: Progresso atualizado no banco - Processados: ${processed}, Falhas: ${failed}, Total: ${jobs.length}`);
         
         // Delay APÓS o request (antes do próximo) - mas não no último job
         if (i < jobs.length - 1) {
@@ -300,14 +304,18 @@ export async function POST(req: NextRequest) {
           })
           .eq('id', job.contactId);
         
+        // CRÍTICO: Atualiza progresso no banco mesmo em caso de erro
         await supabaseServiceRole
           .from('campaigns')
           .update({
             processed_contacts: processed,
             failed_contacts: failed,
+            status: 'running', // Mantém como 'running' durante processamento
             updated_at: new Date().toISOString(),
           })
           .eq('id', campaignId);
+        
+        console.log(`📊 [CAMPANHA ${campaignId}] Job ${jobNumber}: Progresso atualizado após erro - Processados: ${processed}, Falhas: ${failed}, Total: ${jobs.length}`);
         
         // Continua para o próximo job mesmo se este falhou
         if (i < jobs.length - 1) {
@@ -319,9 +327,20 @@ export async function POST(req: NextRequest) {
     }
     
     // Finaliza campanha
-    const finalStatus = failed === jobs.length ? 'failed' : 'completed';
+    // Status: 'failed' apenas se TODOS os jobs falharam, caso contrário 'completed'
+    const finalStatus = failed === jobs.length && processed === 0 ? 'failed' : 'completed';
+    const totalProcessed = processed + failed;
+    const successRate = totalProcessed > 0 ? Math.round((processed / totalProcessed) * 100) : 0;
     
-    await supabaseServiceRole
+    console.log(`🏁 [CAMPANHA ${campaignId}] Finalizando campanha...`);
+    console.log(`📊 [CAMPANHA ${campaignId}] Estatísticas finais:`);
+    console.log(`   - Total de jobs: ${jobs.length}`);
+    console.log(`   - Processados com sucesso: ${processed}`);
+    console.log(`   - Falhas: ${failed}`);
+    console.log(`   - Taxa de sucesso: ${successRate}%`);
+    console.log(`   - Status final: ${finalStatus}`);
+    
+    const updateResult = await supabaseServiceRole
       .from('campaigns')
       .update({
         status: finalStatus,
@@ -330,9 +349,25 @@ export async function POST(req: NextRequest) {
         completed_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
-      .eq('id', campaignId);
+      .eq('id', campaignId)
+      .select('id, status, processed_contacts, failed_contacts, completed_at');
     
-    console.log(`✅ [CAMPANHA ${campaignId}] Campanha finalizada: ${processed} sucessos, ${failed} falhas`);
+    if (updateResult.error) {
+      console.error(`❌ [CAMPANHA ${campaignId}] Erro ao atualizar status final:`, updateResult.error);
+    } else if (updateResult.data && updateResult.data.length > 0) {
+      const updatedCampaign = updateResult.data[0];
+      console.log(`✅ [CAMPANHA ${campaignId}] Campanha finalizada e atualizada no banco:`, {
+        id: updatedCampaign.id,
+        status: updatedCampaign.status,
+        processed: updatedCampaign.processed_contacts,
+        failed: updatedCampaign.failed_contacts,
+        completed_at: updatedCampaign.completed_at,
+      });
+    } else {
+      console.warn(`⚠️ [CAMPANHA ${campaignId}] Campanha não encontrada ao atualizar status final (pode ter sido excluída)`);
+    }
+    
+    console.log(`✅ [CAMPANHA ${campaignId}] Processamento completo: ${processed} sucessos, ${failed} falhas, Status: ${finalStatus}`);
     
     return successResponse(
       {
