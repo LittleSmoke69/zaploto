@@ -31,7 +31,7 @@ export async function GET(
         evolution_apis!inner (
           id,
           base_url,
-          api_key,
+          api_key_global,
           is_active
         )
       `)
@@ -48,14 +48,16 @@ export async function GET(
       ? instance.evolution_apis[0] 
       : instance.evolution_apis;
 
-    if (!evolutionApi?.api_key) {
-      return errorResponse('Instância sem API key configurada', 404);
+    if (!evolutionApi?.api_key_global) {
+      return errorResponse('Instância sem API key global configurada', 404);
     }
 
-    // Verifica status na Evolution
-    const evolutionData = await evolutionService.getConnectionState(instanceName, evolutionApi.api_key, evolutionApi.base_url);
+    // Verifica status na Evolution usando api_key_global
+    const evolutionData = await evolutionService.getConnectionState(instanceName, evolutionApi.api_key_global, evolutionApi.base_url);
     const state = evolutionService.extractState(evolutionData);
     const qrCode = evolutionService.extractQr(evolutionData);
+
+    console.log(`📊 [STATUS] Instância ${instanceName}: state extraído=${state}, dados brutos:`, JSON.stringify(evolutionData).substring(0, 300));
 
     // Mapeia status para o novo formato
     // IMPORTANTE: 'ok' no banco significa CONECTADO, não 'connecting'
@@ -63,10 +65,15 @@ export async function GET(
     let newStatus = instance.status;
     if (state === 'connected') {
       newStatus = 'ok'; // Conectado
+      console.log(`✅ [STATUS] Instância ${instanceName} CONECTADA - atualizando status para 'ok'`);
     } else if (state === 'disconnected') {
       newStatus = 'disconnected'; // Desconectado
+      console.log(`⚠️ [STATUS] Instância ${instanceName} DESCONECTADA - atualizando status para 'disconnected'`);
     } else if (state === 'connecting') {
       newStatus = 'disconnected'; // Aguardando QR code = ainda desconectado
+      console.log(`⏳ [STATUS] Instância ${instanceName} CONECTANDO - mantendo status 'disconnected'`);
+    } else {
+      console.log(`❓ [STATUS] Instância ${instanceName} estado desconhecido: ${state} - mantendo status atual: ${instance.status}`);
     }
 
     // Atualiza no banco
@@ -113,7 +120,7 @@ export async function POST(
         evolution_apis!inner (
           id,
           base_url,
-          api_key,
+          api_key_global,
           is_active
         )
       `)
@@ -130,12 +137,12 @@ export async function POST(
       ? instance.evolution_apis[0] 
       : instance.evolution_apis;
 
-    if (!evolutionApi?.api_key) {
-      return errorResponse('Instância sem API key configurada', 404);
+    if (!evolutionApi?.api_key_global) {
+      return errorResponse('Instância sem API key global configurada', 404);
     }
 
-    // Reconecta na Evolution
-    const evolutionData = await evolutionService.connectInstance(instanceName, evolutionApi.api_key, evolutionApi.base_url);
+    // Reconecta na Evolution usando api_key_global
+    const evolutionData = await evolutionService.connectInstance(instanceName, evolutionApi.api_key_global, evolutionApi.base_url);
     const state = evolutionService.extractState(evolutionData);
     const qrCode = evolutionService.extractQr(evolutionData);
 

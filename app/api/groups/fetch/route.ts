@@ -32,7 +32,6 @@ export async function POST(req: NextRequest) {
         evolution_apis!inner (
           id,
           base_url,
-          api_key,
           is_active
         )
       `)
@@ -42,16 +41,27 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (instanceError || !instance) {
+      console.error(`❌ [GROUPS] Instância não encontrada: ${instanceName}`, instanceError);
       return errorResponse('Instância não encontrada', 404);
+    }
+
+    // CRÍTICO: Usa a apikey da instância (não a global)
+    const instanceApikey = instance.apikey;
+    
+    if (!instanceApikey) {
+      console.error(`❌ [GROUPS] Instância ${instanceName} não possui apikey`);
+      return errorResponse('Instância sem apikey configurada', 404);
     }
 
     const evolutionApi = Array.isArray(instance.evolution_apis) 
       ? instance.evolution_apis[0] 
       : instance.evolution_apis;
 
-    if (!evolutionApi?.api_key) {
-      return errorResponse('Instância sem API key configurada', 404);
+    if (!evolutionApi?.base_url) {
+      return errorResponse('Evolution API sem base_url configurada', 404);
     }
+    
+    console.log(`📋 [GROUPS] Buscando grupos da instância ${instanceName} usando apikey da instância`);
 
     // Busca grupos na Evolution (com timeout)
     const PER_TRY_TIMEOUT = 180_000; // 3 minutos
@@ -73,9 +83,10 @@ export async function POST(req: NextRequest) {
         };
 
         const url = `${evolutionApi.base_url}/group/fetchAllGroups/${instanceName}?getParticipants=true`;
+        console.log(`🔄 [GROUPS] Tentativa ${attempt}: Buscando grupos em ${url}`);
         const resp = await fetchWithTimeout(
           url,
-          { method: 'GET', headers: { apikey: evolutionApi.api_key } },
+          { method: 'GET', headers: { apikey: instanceApikey } }, // CRÍTICO: Usa apikey da instância
           PER_TRY_TIMEOUT
         );
 

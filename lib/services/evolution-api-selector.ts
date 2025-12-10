@@ -17,16 +17,24 @@ export class EvolutionApiSelector {
   } | null> {
     try {
       // Busca todas as Evolution APIs ativas
+      console.log('🔍 [SELECTOR] Buscando Evolution APIs ativas...');
       const { data: apis, error: apisError } = await supabaseServiceRole
         .from('evolution_apis')
         .select('id, name, base_url, api_key_global, is_active')
         .eq('is_active', true)
         .order('created_at', { ascending: true });
 
-      if (apisError || !apis || apis.length === 0) {
-        console.error('Nenhuma Evolution API ativa encontrada:', apisError);
+      if (apisError) {
+        console.error('❌ [SELECTOR] Erro ao buscar Evolution APIs:', apisError);
         return null;
       }
+
+      if (!apis || apis.length === 0) {
+        console.error('❌ [SELECTOR] Nenhuma Evolution API ativa encontrada no banco de dados');
+        return null;
+      }
+
+      console.log(`✅ [SELECTOR] Encontradas ${apis.length} Evolution API(s) ativa(s):`, apis.map(a => a.name));
 
       // Conta quantas instâncias cada API já tem
       const apiInstanceCounts = await Promise.all(

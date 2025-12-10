@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
           id,
           name,
           base_url,
-          api_key
+          api_key_global
         )
       `);
 
@@ -83,7 +83,7 @@ export async function GET(req: NextRequest) {
           number: inst.phone_number,
           created_at: inst.created_at,
           updated_at: inst.updated_at,
-          hash: evolutionApi?.api_key || null, // API key da Evolution API para compatibilidade
+          hash: evolutionApi?.api_key_global || null, // API key global da Evolution API para compatibilidade
           qr_code: null, // QR code é temporário
           user_id: userId, // Adiciona para compatibilidade
         };
@@ -143,37 +143,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // NOVA LÓGICA: Balanceamento automático - seleciona a Evolution API com menor carga
-    // Se o usuário tem APIs atribuídas, tenta usar uma delas primeiro (opcional)
-    let selectedApi = null;
-
-    // Tenta usar API do usuário primeiro (se tiver atribuída) - OPCIONAL
-    const userApi = await getUserEvolutionApi(userId);
-    if (userApi) {
-      const { data: userApiRecord } = await supabaseServiceRole
-        .from('evolution_apis')
-        .select('id, name, base_url, api_key_global')
-        .eq('base_url', userApi.baseUrl)
-        .eq('api_key_global', userApi.apiKey)
-        .eq('is_active', true)
-        .single();
-
-      if (userApiRecord) {
-        selectedApi = userApiRecord;
-      }
-    }
-
-    // Se não tem API atribuída ou não encontrou, usa balanceamento automático
+    // SIMPLIFICADO: Sempre usa balanceamento automático para distribuir carga
+    // A atribuição de usuário é opcional e não é necessária
+    console.log(`🔄 [INSTÂNCIA] Selecionando Evolution API usando balanceamento automático...`);
+    
+    const selectedApi = await evolutionApiSelector.selectBestEvolutionApiForNewInstance();
+    
     if (!selectedApi) {
-      const balancedApi = await evolutionApiSelector.selectBestEvolutionApiForNewInstance();
-      if (!balancedApi) {
-        return errorResponse(
-          'Nenhuma Evolution API ativa configurada. Configure pelo menos uma Evolution API no painel admin.',
-          400
-        );
-      }
-      selectedApi = balancedApi;
+      console.error('❌ [INSTÂNCIA] Nenhuma Evolution API ativa encontrada');
+      return errorResponse(
+        'Nenhuma Evolution API ativa configurada. Configure pelo menos uma Evolution API no painel admin.',
+        400
+      );
     }
+    
+    console.log(`✅ [INSTÂNCIA] Evolution API selecionada: ${selectedApi.name} (${selectedApi.base_url})`);
 
     const apiRecord = { id: selectedApi.id };
 
@@ -182,7 +166,7 @@ export async function POST(req: NextRequest) {
     // Cria instância na Evolution API selecionada pelo balanceador
     const tempEvolutionService = {
       baseUrl: selectedApi.base_url,
-      masterKey: selectedApi.api_key_global, // CRÍTICO: Usa api_key_global para criar instância
+      masterKey: selectedApi.api_key, // api_key contém o valor de api_key_global
       async createInstance(name: string, number: string, qrcode: boolean = true) {
         try {
           console.log(`🔄 [INSTÂNCIA] Fazendo request para Evolution API: ${this.baseUrl}/instance/create`);
@@ -287,9 +271,9 @@ export async function POST(req: NextRequest) {
         if (evolutionData.hash) {
           const deleteResponse = await fetch(`${selectedApi.base_url}/instance/delete/${instanceName}`, {
             method: 'DELETE',
-            headers: {
-              apikey: selectedApi.api_key_global, // CRÍTICO: Usa api_key_global
-            },
+             headers: {
+               apikey: selectedApi.api_key, // api_key contém o valor de api_key_global
+             },
           });
           if (!deleteResponse.ok) {
             console.warn('Não foi possível deletar instância duplicada na Evolution');
@@ -301,13 +285,14 @@ export async function POST(req: NextRequest) {
       return errorResponse('Instância com este nome já existe para esta Evolution API', 400);
     }
 
-    // CRÍTICO: Captura a apikey da instância do hash retornado pela Evolution API
-    const instanceApikey = evolutionData.hash?.apikey || null;
+    // CRÍTICO: Captura o hash da instância retornado pela Evolution API
+    // O hash é uma string direta, não um objeto
+    const instanceHash = evolutionData.hash || null;
     
-    if (!instanceApikey) {
-      console.warn(`⚠️ [INSTÂNCIA] Hash.apikey não encontrado na resposta da Evolution API. Resposta:`, JSON.stringify(evolutionData).substring(0, 500));
+    if (!instanceHash) {
+      console.warn(`⚠️ [INSTÂNCIA] Hash não encontrado na resposta da Evolution API. Resposta:`, JSON.stringify(evolutionData).substring(0, 500));
     } else {
-      console.log(`✅ [INSTÂNCIA] Apikey da instância capturada: ${instanceApikey.substring(0, 10)}...`);
+      console.log(`✅ [INSTÂNCIA] Hash da instância capturado: ${instanceHash}`);
     }
 
     // Salva na nova tabela evolution_instances com user_id
@@ -325,7 +310,7 @@ export async function POST(req: NextRequest) {
         error_today: 0,
         rate_limit_count_today: 0,
         user_id: userId, // Vincula a instância ao usuário que criou
-        apikey: instanceApikey, // CRÍTICO: Salva a apikey da instância
+        apikey: instanceHash, // CRÍTICO: Salva o hash da instância (que é usado como apikey nos requests)
       })
       .select()
       .single();
@@ -337,9 +322,9 @@ export async function POST(req: NextRequest) {
           // Cria função temporária para deletar
           const deleteResponse = await fetch(`${selectedApi.base_url}/instance/delete/${instanceName}`, {
             method: 'DELETE',
-            headers: {
-              apikey: selectedApi.api_key_global, // CRÍTICO: Usa api_key_global
-            },
+             headers: {
+               apikey: selectedApi.api_key, // api_key contém o valor de api_key_global
+             },
           });
           if (!deleteResponse.ok) {
             console.warn('Não foi possível deletar instância na Evolution após falha no banco');

@@ -162,12 +162,31 @@ export class EvolutionService {
    * Extrai o estado de conexão de uma resposta
    */
   extractState(data: any): 'connected' | 'connecting' | 'disconnected' | 'unknown' {
-    const raw = (data?.instance?.state ?? data?.state ?? data?.connection?.state ?? data?.status ?? '')
+    // Tenta extrair o estado de diferentes formatos de resposta
+    const raw = (data?.instance?.state ?? 
+                 data?.instancee?.status ?? // Pode ser "instancee" (typo da API)
+                 data?.state ?? 
+                 data?.connection?.state ?? 
+                 data?.status ?? 
+                 data?.instance?.status ?? 
+                 '')
       .toString()
       .toLowerCase();
 
-    if (!raw) return 'unknown';
-    if (raw === 'open') return 'connected';
+    console.log(`🔍 [EvolutionService] Extraindo estado - raw: "${raw}", data keys:`, Object.keys(data || {}));
+    
+    if (!raw) {
+      // Se não encontrou estado, verifica se tem instancee.status
+      if (data?.instancee?.status) {
+        const instanceStatus = data.instancee.status.toString().toLowerCase();
+        if (instanceStatus === 'open' || instanceStatus === 'connected') return 'connected';
+        if (instanceStatus === 'connecting') return 'connecting';
+        if (instanceStatus === 'close' || instanceStatus === 'closed' || instanceStatus === 'disconnected') return 'disconnected';
+      }
+      return 'unknown';
+    }
+    
+    if (raw === 'open' || raw === 'connected') return 'connected';
     if (['connecting', 'pairing', 'qrcode', 'qr', 'waiting_qr'].includes(raw)) return 'connecting';
     if (['close', 'closed', 'disconnected', 'logout'].includes(raw)) return 'disconnected';
     return 'unknown';
