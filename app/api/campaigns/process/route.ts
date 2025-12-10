@@ -116,11 +116,12 @@ export async function POST(req: NextRequest) {
       .eq('id', campaignId);
     console.log(`✅ [CAMPANHA ${campaignId}] Status atualizado para 'running'. Processamento iniciando...`);
 
-    // REESTRUTURAÇÃO: Executa o primeiro request IMEDIATAMENTE antes de retornar a resposta
-    // Isso garante que a campanha comece de fato na Netlify
-    console.log(`🚀 [CAMPANHA ${campaignId}] Executando PRIMEIRO REQUEST IMEDIATAMENTE antes de retornar resposta...`);
+    // CRÍTICO: Processa TODOS os jobs sequencialmente no mesmo contexto HTTP
+    // Na Netlify, funções serverless terminam após retornar resposta HTTP
+    // Então precisamos processar tudo ANTES de retornar a resposta
+    console.log(`🚀 [CAMPANHA ${campaignId}] Processando TODOS os ${jobs.length} jobs sequencialmente no contexto HTTP...`);
     
-    // Extrai informações necessárias para processar o primeiro job
+    // Extrai informações necessárias
     const strategy = campaign.strategy || {};
     const groupId = campaign.group_id;
     const delayConfig = strategy.delayConfig || {};
@@ -139,27 +140,105 @@ export async function POST(req: NextRequest) {
       return `55${cleaned}`;
     };
     
-    // Processa o primeiro job IMEDIATAMENTE (se houver)
-    let firstJobProcessed = false;
-    if (jobs.length > 0) {
-      const firstJob = jobs[0];
-      const normalizedPhone = normalizePhoneNumber(firstJob.phone);
+    // Função para calcular delay
+    const getDelay = (): number => {
+      if (delayConfig.delayMode === 'random') {
+        const min = Math.max(1, Number(delayConfig.randomMinSeconds) || 1);
+        const max = Math.max(1, Number(delayConfig.randomMaxSeconds) || 1);
+        const seconds = Math.floor(Math.random() * (max - min + 1)) + min;
+        return seconds * 1000;
+      } else {
+        const value = Number(delayConfig.delayValue) || 0;
+        const unit = delayConfig.delayUnit === 'minutes' ? 60 : 1;
+        return Math.max(1000, value * unit * 1000);
+      }
+    };
+    
+    // Processa TODOS os jobs sequencialmente
+    let processed = 0;
+    let failed = 0;
+    
+    for (let i = 0; i < jobs.length; i++) {
+      const job = jobs[i];
+      const jobNumber = i + 1;
+      const normalizedPhone = normalizePhoneNumber(job.phone);
       
-      console.log(`⚡ [CAMPANHA ${campaignId}] Executando PRIMEIRO JOB IMEDIATAMENTE: ${normalizedPhone}`);
+      console.log(`📞 [CAMPANHA ${campaignId}] Job ${jobNumber}/${jobs.length}: Processando ${normalizedPhone}`);
+      
+      // Marca o tempo inicial do request
+      const requestStartTime = Date.now();
       
       try {
-        // Executa o primeiro request ANTES de retornar a resposta
-        const result = await evolutionBalancer.addLeadToGroup({
+        // Faz request DIRETO para Evolution API (sem passar pelo balancer complexo)
+        const instance = await evolutionBalancer.pickBestEvolutionInstance({
           userId,
-          groupId,
-          leadPhone: normalizedPhone,
           preferUserBinding,
         });
         
-        console.log(`✅ [CAMPANHA ${campaignId}] PRIMEIRO REQUEST concluído: ${result.success ? 'SUCESSO' : 'FALHA'}`);
+        if (!instance || !instance.evolution_api) {
+          throw new Error('Nenhuma instância disponível');
+        }
         
-        // Atualiza contato e progresso
-        if (result.success) {
+        // Busca apikey da instância
+        const { data: instanceData } = await supabaseServiceRole
+          .from('evolution_instances')
+          .select('apikey')
+          .eq('id', instance.id)
+          .single();
+        
+        const instanceApikey = instanceData?.apikey;
+        
+        if (!instanceApikey) {
+          throw new Error('Instância sem apikey configurada');
+        }
+        
+        // Faz request DIRETO para Evolution API
+        const normalizedBaseUrl = instance.evolution_api.base_url.replace(/\/+$/, '').replace(/([^:]\/)\/+/g, '$1');
+        const url = `${normalizedBaseUrl}/group/updateParticipant/${instance.instance_name}?groupJid=${encodeURIComponent(groupId)}`;
+        const finalUrl = url.replace(/([^:]\/)\/+/g, '$1');
+        
+        const body = {
+          action: 'add',
+          participants: [normalizedPhone],
+        };
+        
+        console.log(`📤 [CAMPANHA ${campaignId}] Job ${jobNumber}: Fazendo request para ${finalUrl}`);
+        
+        // Timeout de 25 segundos
+        const FETCH_TIMEOUT_MS = 25000;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => {
+          controller.abort();
+        }, FETCH_TIMEOUT_MS);
+        
+        const response = await fetch(finalUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: instanceApikey,
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        
+        clearTimeout(timeoutId);
+        
+        const responseText = await response.text();
+        let responseData: any = {};
+        
+        try {
+          responseData = JSON.parse(responseText);
+        } catch {
+          responseData = { message: responseText };
+        }
+        
+        // Calcula tempo de resposta do request
+        const requestDuration = Date.now() - requestStartTime;
+        
+        if (response.ok) {
+          processed++;
+          console.log(`✅ [CAMPANHA ${campaignId}] Job ${jobNumber}: SUCESSO em ${requestDuration}ms`);
+          
           await rateLimitService.recordLeadUsage(campaignId, 1, true);
           await supabaseServiceRole
             .from('searches')
@@ -168,17 +247,11 @@ export async function POST(req: NextRequest) {
               status: 'added',
               updated_at: new Date().toISOString(),
             })
-            .eq('id', firstJob.contactId);
-          
-          await supabaseServiceRole
-            .from('campaigns')
-            .update({
-              processed_contacts: 1,
-              failed_contacts: 0,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', campaignId);
+            .eq('id', job.contactId);
         } else {
+          failed++;
+          console.log(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: FALHA em ${requestDuration}ms - ${response.status} ${responseData.message || ''}`);
+          
           await rateLimitService.recordLeadUsage(campaignId, 1, false);
           await supabaseServiceRole
             .from('searches')
@@ -186,21 +259,38 @@ export async function POST(req: NextRequest) {
               status: 'erro',
               updated_at: new Date().toISOString(),
             })
-            .eq('id', firstJob.contactId);
-          
-          await supabaseServiceRole
-            .from('campaigns')
-            .update({
-              processed_contacts: 0,
-              failed_contacts: 1,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', campaignId);
+            .eq('id', job.contactId);
         }
         
-        firstJobProcessed = true;
+        // Atualiza progresso no banco
+        await supabaseServiceRole
+          .from('campaigns')
+          .update({
+            processed_contacts: processed,
+            failed_contacts: failed,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', campaignId);
+        
+        // Delay APÓS o request (antes do próximo) - mas não no último job
+        if (i < jobs.length - 1) {
+          const delay = getDelay();
+          const delayStartTime = Date.now();
+          
+          console.log(`⏳ [CAMPANHA ${campaignId}] Job ${jobNumber} concluído. Aguardando ${delay}ms (${(delay/1000).toFixed(1)}s) antes do próximo...`);
+          
+          // Aguarda o delay configurado
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          
+          const actualDelay = Date.now() - delayStartTime;
+          console.log(`✅ [CAMPANHA ${campaignId}] Delay concluído: ${actualDelay}ms aguardados`);
+        }
+        
       } catch (error: any) {
-        console.error(`❌ [CAMPANHA ${campaignId}] Erro ao processar primeiro job:`, error);
+        failed++;
+        const requestDuration = Date.now() - requestStartTime;
+        console.error(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: ERRO após ${requestDuration}ms:`, error?.message || error);
+        
         await rateLimitService.recordLeadUsage(campaignId, 1, false);
         await supabaseServiceRole
           .from('searches')
@@ -208,67 +298,52 @@ export async function POST(req: NextRequest) {
             status: 'erro',
             updated_at: new Date().toISOString(),
           })
-          .eq('id', firstJob.contactId);
+          .eq('id', job.contactId);
         
         await supabaseServiceRole
           .from('campaigns')
           .update({
-            processed_contacts: 0,
-            failed_contacts: 1,
+            processed_contacts: processed,
+            failed_contacts: failed,
             updated_at: new Date().toISOString(),
           })
           .eq('id', campaignId);
+        
+        // Continua para o próximo job mesmo se este falhou
+        if (i < jobs.length - 1) {
+          const delay = getDelay();
+          console.log(`⏳ [CAMPANHA ${campaignId}] Job ${jobNumber} falhou. Aguardando ${delay}ms antes do próximo...`);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
       }
     }
     
-    // Agora processa os demais jobs de forma assíncrona (se houver)
-    const remainingJobs = firstJobProcessed ? jobs.slice(1) : jobs;
+    // Finaliza campanha
+    const finalStatus = failed === jobs.length ? 'failed' : 'completed';
     
-    if (remainingJobs.length > 0) {
-      console.log(`🔄 [CAMPANHA ${campaignId}] Iniciando processamento assíncrono dos ${remainingJobs.length} jobs restantes...`);
-      
-      // Processa os demais jobs de forma assíncrona
-      const processPromise = processCampaignAsync(campaignId, campaign, remainingJobs, userId);
-      
-      // Garante tratamento de erros
-      processPromise.catch((err) => {
-        console.error('❌ [CAMPANHA] Erro fatal ao processar campanha assíncrona:', err);
-        console.error('❌ [CAMPANHA] Stack trace:', err?.stack);
-      });
-    } else {
-      console.log(`✅ [CAMPANHA ${campaignId}] Todos os jobs foram processados. Finalizando campanha...`);
-      
-      // Se só havia um job, finaliza a campanha
-      const { data: finalCampaign } = await supabaseServiceRole
-        .from('campaigns')
-        .select('processed_contacts, failed_contacts')
-        .eq('id', campaignId)
-        .single();
-      
-      if (finalCampaign) {
-        const finalStatus = finalCampaign.failed_contacts === jobs.length ? 'failed' : 'completed';
-        await supabaseServiceRole
-          .from('campaigns')
-          .update({
-            status: finalStatus,
-            completed_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', campaignId);
-      }
-    }
-
-    console.log(`✅ [CAMPANHA ${campaignId}] Campanha iniciada com sucesso! Primeiro request executado. Total de jobs: ${jobs.length}.`);
+    await supabaseServiceRole
+      .from('campaigns')
+      .update({
+        status: finalStatus,
+        processed_contacts: processed,
+        failed_contacts: failed,
+        completed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', campaignId);
+    
+    console.log(`✅ [CAMPANHA ${campaignId}] Campanha finalizada: ${processed} sucessos, ${failed} falhas`);
     
     return successResponse(
       {
         campaignId,
-        status: 'running',
+        status: finalStatus,
         totalJobs: jobs.length,
-        firstJobProcessed,
-        message: 'Campanha iniciada. Primeiro request executado. Processamento em andamento.',
+        processed,
+        failed,
+        message: `Campanha finalizada: ${processed} sucessos, ${failed} falhas`,
       },
-      'Campanha iniciada com sucesso'
+      'Campanha processada com sucesso'
     );
   } catch (err: any) {
     return serverErrorResponse(err);
@@ -276,9 +351,10 @@ export async function POST(req: NextRequest) {
 }
 
 /**
- * Processa a campanha de forma assíncrona
+ * @deprecated Esta função não é mais usada - todo processamento é feito sequencialmente na função POST
+ * Mantida apenas para referência histórica
  */
-async function processCampaignAsync(
+async function processCampaignAsync_DEPRECATED(
   campaignId: string,
   campaign: any,
   jobs: Array<{ contactId: string; phone: string }>,
