@@ -152,9 +152,9 @@ export async function POST(req: NextRequest) {
     if (userApi) {
       const { data: userApiRecord } = await supabaseServiceRole
         .from('evolution_apis')
-        .select('id, name, base_url, api_key')
+        .select('id, name, base_url, api_key_global')
         .eq('base_url', userApi.baseUrl)
-        .eq('api_key', userApi.apiKey)
+        .eq('api_key_global', userApi.apiKey)
         .eq('is_active', true)
         .single();
 
@@ -182,34 +182,62 @@ export async function POST(req: NextRequest) {
     // Cria instância na Evolution API selecionada pelo balanceador
     const tempEvolutionService = {
       baseUrl: selectedApi.base_url,
-      masterKey: selectedApi.api_key,
+      masterKey: selectedApi.api_key_global, // CRÍTICO: Usa api_key_global para criar instância
       async createInstance(name: string, number: string, qrcode: boolean = true) {
-        const response = await fetch(`${this.baseUrl}/instance/create`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            apikey: this.masterKey,
-          },
-          body: JSON.stringify({
-            instanceName: name,
-            qrcode,
-            number,
-            integration: 'WHATSAPP-BAILEYS',
-          }),
-        });
+        try {
+          console.log(`🔄 [INSTÂNCIA] Fazendo request para Evolution API: ${this.baseUrl}/instance/create`);
+          const response = await fetch(`${this.baseUrl}/instance/create`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: this.masterKey,
+            },
+            body: JSON.stringify({
+              instanceName: name,
+              qrcode,
+              number,
+              integration: 'WHATSAPP-BAILEYS',
+            }),
+          });
 
-        if (!response.ok) {
-          const error = await response.json().catch(() => ({}));
-          throw new Error(error.message || `Erro ao criar instância: ${response.statusText}`);
+          if (!response.ok) {
+            let errorMessage = `Erro HTTP ${response.status}: ${response.statusText}`;
+            try {
+              const errorData = await response.json();
+              errorMessage = errorData.message || errorData.error || errorMessage;
+            } catch {
+              // Se não conseguir parsear JSON, tenta ler como texto
+              try {
+                const errorText = await response.text();
+                errorMessage = errorText || errorMessage;
+              } catch {
+                // Mantém a mensagem padrão
+              }
+            }
+            console.error(`❌ [INSTÂNCIA] Evolution API retornou erro: ${errorMessage}`);
+            throw new Error(errorMessage);
+          }
+
+          const data = await response.json();
+          console.log(`✅ [INSTÂNCIA] Evolution API retornou sucesso`);
+          return data;
+        } catch (fetchError: any) {
+          console.error('❌ [INSTÂNCIA] Erro no fetch para Evolution API:', fetchError);
+          throw new Error(fetchError?.message || 'Erro ao conectar com Evolution API');
         }
-
-        return await response.json();
       },
     };
 
     console.log(`📊 Criando instância ${instanceName} na Evolution API: ${selectedApi.name} (${selectedApi.base_url})`);
 
-    const evolutionData = await tempEvolutionService.createInstance(instanceName, fullNumber, true);
+    let evolutionData;
+    try {
+      evolutionData = await tempEvolutionService.createInstance(instanceName, fullNumber, true);
+    } catch (createError: any) {
+      console.error('❌ [INSTÂNCIA] Erro ao criar instância na Evolution API:', createError);
+      const errorMsg = createError?.message || 'Erro ao criar instância na Evolution API';
+      return errorResponse(`Erro ao criar instância: ${errorMsg}`, 500);
+    }
 
     console.log('Evolution API Response:', {
       hasQrcode: !!evolutionData.qrcode,
@@ -260,7 +288,7 @@ export async function POST(req: NextRequest) {
           const deleteResponse = await fetch(`${selectedApi.base_url}/instance/delete/${instanceName}`, {
             method: 'DELETE',
             headers: {
-              apikey: selectedApi.api_key,
+              apikey: selectedApi.api_key_global, // CRÍTICO: Usa api_key_global
             },
           });
           if (!deleteResponse.ok) {
@@ -310,7 +338,7 @@ export async function POST(req: NextRequest) {
           const deleteResponse = await fetch(`${selectedApi.base_url}/instance/delete/${instanceName}`, {
             method: 'DELETE',
             headers: {
-              apikey: selectedApi.api_key,
+              apikey: selectedApi.api_key_global, // CRÍTICO: Usa api_key_global
             },
           });
           if (!deleteResponse.ok) {
@@ -338,7 +366,18 @@ export async function POST(req: NextRequest) {
 
     return successResponse(responseData, 'Instância criada com sucesso');
   } catch (err: any) {
-    return serverErrorResponse(err);
+    console.error('❌ [INSTÂNCIA] Erro ao criar instância:', err);
+    console.error('❌ [INSTÂNCIA] Stack trace:', err?.stack);
+    console.error('❌ [INSTÂNCIA] Erro detalhado:', {
+      message: err?.message,
+      name: err?.name,
+      code: err?.code,
+      cause: err?.cause,
+    });
+    
+    // Garante que sempre retorna JSON válido
+    const errorMessage = err?.message || err?.toString() || 'Erro desconhecido ao criar instância';
+    return errorResponse(errorMessage, 500);
   }
 }
 

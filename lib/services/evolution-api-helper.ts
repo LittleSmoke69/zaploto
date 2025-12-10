@@ -18,7 +18,7 @@ export async function getUserEvolutionApi(userId: string): Promise<{
         evolution_apis (
           id,
           base_url,
-          api_key,
+          api_key_global,
           is_active
         )
       `)
@@ -37,7 +37,7 @@ export async function getUserEvolutionApi(userId: string): Promise<{
       if (api && typeof api === 'object' && 'base_url' in api) {
         return {
           baseUrl: api.base_url,
-          apiKey: api.api_key,
+          apiKey: api.api_key_global, // CRÍTICO: Usa api_key_global
         };
       }
     }
@@ -49,7 +49,7 @@ export async function getUserEvolutionApi(userId: string): Promise<{
         evolution_apis (
           id,
           base_url,
-          api_key,
+          api_key_global,
           is_active
         )
       `)
@@ -68,18 +68,18 @@ export async function getUserEvolutionApi(userId: string): Promise<{
       if (api && typeof api === 'object' && 'base_url' in api) {
         return {
           baseUrl: api.base_url,
-          apiKey: api.api_key,
+          apiKey: api.api_key_global, // CRÍTICO: Usa api_key_global
         };
       }
     }
 
     // Se não tem API atribuída, busca a primeira API ativa do sistema
-    const { data: systemApi } = await supabaseServiceRole
-      .from('evolution_apis')
-      .select('base_url, api_key')
-      .eq('is_active', true)
-      .limit(1)
-      .single();
+      const { data: systemApi } = await supabaseServiceRole
+        .from('evolution_apis')
+        .select('base_url, api_key_global')
+        .eq('is_active', true)
+        .limit(1)
+        .single();
 
     if (systemApi) {
       return {

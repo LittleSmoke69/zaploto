@@ -13,13 +13,13 @@ export class EvolutionApiSelector {
     id: string;
     name: string;
     base_url: string;
-    api_key: string;
+    api_key: string; // Na verdade é api_key_global
   } | null> {
     try {
       // Busca todas as Evolution APIs ativas
       const { data: apis, error: apisError } = await supabaseServiceRole
         .from('evolution_apis')
-        .select('id, name, base_url, api_key, is_active')
+        .select('id, name, base_url, api_key_global, is_active')
         .eq('is_active', true)
         .order('created_at', { ascending: true });
 
@@ -58,7 +58,7 @@ export class EvolutionApiSelector {
         id: selected.api.id,
         name: selected.api.name,
         base_url: selected.api.base_url,
-        api_key: selected.api.api_key,
+        api_key: selected.api.api_key_global, // CRÍTICO: Retorna api_key_global
       };
     } catch (error) {
       console.error('Erro ao selecionar Evolution API:', error);
@@ -73,13 +73,13 @@ export class EvolutionApiSelector {
     id: string;
     name: string;
     base_url: string;
-    api_key: string;
+    api_key: string; // Na verdade é api_key_global
     instanceCount: number;
   }>> {
     try {
       const { data: apis, error } = await supabaseServiceRole
         .from('evolution_apis')
-        .select('id, name, base_url, api_key, is_active')
+        .select('id, name, base_url, api_key_global, is_active')
         .eq('is_active', true)
         .order('created_at', { ascending: true });
 
@@ -100,7 +100,7 @@ export class EvolutionApiSelector {
             id: api.id,
             name: api.name,
             base_url: api.base_url,
-            api_key: api.api_key,
+            api_key: api.api_key_global, // CRÍTICO: Retorna api_key_global
             instanceCount: count || 0,
           };
         })
