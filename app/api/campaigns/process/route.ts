@@ -465,20 +465,179 @@ async function processCampaignAsync(
         attempts++;
         const addStartTime = Date.now();
         
+        // Declara result antes do try para estar disponível no catch
+        let result: {
+          success: boolean;
+          error?: string;
+          errorType?: 'rate_limit' | 'bad_request' | 'connection_closed' | 'unknown';
+          added?: number;
+          httpStatus?: number;
+          responseData?: any;
+          instanceUsed?: any;
+        } = {
+          success: false,
+          error: 'Erro desconhecido',
+          errorType: 'unknown',
+          added: 0,
+          httpStatus: 0,
+        };
+        
         try {
-          console.log(`🔄 [CAMPANHA ${campaignId}] Job ${jobNumber}: Tentativa ${attempts}/${maxAttempts} - Chamando evolutionBalancer.addLeadToGroup para telefone ${normalizedPhone}...`);
+          console.log(`🔄 [CAMPANHA ${campaignId}] Job ${jobNumber}: Tentativa ${attempts}/${maxAttempts} - Fazendo request DIRETO para Evolution API...`);
           
-          // Usa o balanceador automático para adicionar lead ao grupo
-          // O balanceador distribui automaticamente entre todas as Evolution APIs ativas
-          const result = await evolutionBalancer.addLeadToGroup({
-            userId, // Opcional - usado apenas se preferUserBinding=true
-            groupId,
-            leadPhone: normalizedPhone,
-            preferUserBinding, // Se false, distribui entre todas as APIs
+          // SIMPLIFICADO: Faz request DIRETO para Evolution API usando instância selecionada
+          // Busca instância e faz request direto (sem passar pelo balanceador complexo)
+          const instance = await evolutionBalancer.pickBestEvolutionInstance({
+            userId,
+            preferUserBinding,
           });
+          
+          if (!instance || !instance.evolution_api) {
+            // Cria resultado de erro para tratamento
+            result = {
+              success: false,
+              error: 'Nenhuma instância disponível',
+              errorType: 'unknown',
+              added: 0,
+              httpStatus: 0,
+            };
+            throw new Error('Nenhuma instância disponível');
+          }
+          
+          // Busca apikey da instância
+          const { data: instanceData } = await supabaseServiceRole
+            .from('evolution_instances')
+            .select('apikey')
+            .eq('id', instance.id)
+            .single();
+          
+          const instanceApikey = instanceData?.apikey;
+          
+          if (!instanceApikey) {
+            // Cria resultado de erro para tratamento
+            result = {
+              success: false,
+              error: 'Instância sem apikey configurada',
+              errorType: 'unknown',
+              added: 0,
+              httpStatus: 0,
+            };
+            throw new Error('Instância sem apikey configurada');
+          }
+          
+          // Faz request DIRETO para Evolution API
+          const normalizedBaseUrl = instance.evolution_api.base_url.replace(/\/+$/, '').replace(/([^:]\/)\/+/g, '$1');
+          const url = `${normalizedBaseUrl}/group/updateParticipant/${instance.instance_name}?groupJid=${encodeURIComponent(groupId)}`;
+          const finalUrl = url.replace(/([^:]\/)\/+/g, '$1');
+          
+          const body = {
+            action: 'add',
+            participants: [normalizedPhone],
+          };
+          
+          console.log(`📤 [CAMPANHA ${campaignId}] Job ${jobNumber}: URL: ${finalUrl}`);
+          console.log(`📤 [CAMPANHA ${campaignId}] Job ${jobNumber}: Body:`, JSON.stringify(body));
+          
+          // Timeout de 25 segundos (menor que 30 para evitar abort na Netlify)
+          const FETCH_TIMEOUT_MS = 25000;
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => {
+            controller.abort();
+          }, FETCH_TIMEOUT_MS);
+          
+          const response = await fetch(finalUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: instanceApikey,
+            },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
+          
+          clearTimeout(timeoutId);
+          
+          const responseText = await response.text();
+          let responseData: any = {};
+          
+          try {
+            responseData = JSON.parse(responseText);
+          } catch {
+            responseData = { message: responseText };
+          }
+          
+          // Cria resultado no formato esperado
+          let result: {
+            success: boolean;
+            error?: string;
+            errorType?: 'rate_limit' | 'bad_request' | 'connection_closed' | 'unknown';
+            added?: number;
+            httpStatus?: number;
+            responseData?: any;
+            instanceUsed?: any;
+          };
+          
+          if (response.ok) {
+            result = {
+              success: true,
+              added: 1,
+              httpStatus: response.status,
+              responseData,
+              instanceUsed: {
+                id: instance.id,
+                instance_name: instance.instance_name,
+                evolution_api_id: instance.evolution_api_id,
+              },
+            };
+          } else if (response.status === 403) {
+            result = {
+              success: false,
+              error: 'Rate limit (403)',
+              errorType: 'rate_limit',
+              added: 0,
+              httpStatus: 403,
+              responseData,
+              instanceUsed: {
+                id: instance.id,
+                instance_name: instance.instance_name,
+                evolution_api_id: instance.evolution_api_id,
+              },
+            };
+          } else if (response.status === 400) {
+            const errorMsg = responseData?.message || responseText || 'Bad request';
+            const isConnectionClosed = errorMsg.toLowerCase().includes('connection closed');
+            
+            result = {
+              success: false,
+              error: isConnectionClosed ? 'Connection Closed' : errorMsg,
+              errorType: isConnectionClosed ? 'connection_closed' : 'bad_request',
+              added: 0,
+              httpStatus: 400,
+              responseData,
+              instanceUsed: {
+                id: instance.id,
+                instance_name: instance.instance_name,
+                evolution_api_id: instance.evolution_api_id,
+              },
+            };
+          } else {
+            result = {
+              success: false,
+              error: responseData?.message || `Erro HTTP ${response.status}`,
+              errorType: 'unknown',
+              added: 0,
+              httpStatus: response.status,
+              responseData,
+              instanceUsed: {
+                id: instance.id,
+                instance_name: instance.instance_name,
+                evolution_api_id: instance.evolution_api_id,
+              },
+            };
+          }
         
           const addDuration = Date.now() - addStartTime;
-          console.log(`⏱️ [CAMPANHA ${campaignId}] Job ${jobNumber}: addLeadToGroup concluído em ${addDuration}ms (tentativa ${attempts}/${maxAttempts})`);
+          console.log(`⏱️ [CAMPANHA ${campaignId}] Job ${jobNumber}: Request concluído em ${addDuration}ms (tentativa ${attempts}/${maxAttempts})`);
           console.log(`📊 [CAMPANHA ${campaignId}] Job ${jobNumber}: Resultado - ${result.success ? 'SUCESSO' : 'FALHA'} ${result.error ? `(${result.error})` : ''}`);
           console.log(`📊 [CAMPANHA ${campaignId}] Job ${jobNumber}: Detalhes - errorType: ${result.errorType || 'N/A'}, httpStatus: ${result.httpStatus || 'N/A'}`);
 
@@ -522,8 +681,8 @@ async function processCampaignAsync(
               continue; // Tenta novamente
             }
 
-            // Se não há instâncias disponíveis, marca todos os restantes como erro
-            if (result.errorType === 'no_instance_available') {
+            // Se não há instâncias disponíveis (erro ao buscar instância), marca como erro
+            if (result.error?.includes('Nenhuma instância') || result.error?.includes('sem apikey')) {
               const remaining = jobs.length - i;
               const remainingJobs = jobs.slice(i);
               const remainingContactIds = remainingJobs.map(j => j.contactId);
@@ -590,15 +749,45 @@ async function processCampaignAsync(
               .eq('id', job.contactId);
           }
         } catch (addError: any) {
-          console.error(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: Exceção ao chamar addLeadToGroup (tentativa ${attempts}/${maxAttempts}):`, addError);
+          const addDuration = Date.now() - addStartTime;
+          console.error(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: Exceção ao fazer request (tentativa ${attempts}/${maxAttempts}):`, addError);
           console.error(`❌ [CAMPANHA ${campaignId}] Stack trace:`, addError?.stack);
           
-          // Se não for última tentativa, faz retry
-          if (attempts < maxAttempts) {
-            const waitMs = Math.max(getDelay() || 2000, 2000);
-            console.log(`⚠️ [CAMPANHA ${campaignId}] Job ${jobNumber}: Exceção. Retentando em ${(waitMs / 1000).toFixed(1)}s (tentativa ${attempts}/${maxAttempts})`);
-            await new Promise(resolve => setTimeout(resolve, waitMs));
-            continue; // Tenta novamente
+          // Trata AbortError (timeout ou abort na Netlify)
+          const isAbortError = addError?.name === 'AbortError' || addError?.code === 20;
+          const isTimeout = addError?.message?.includes('timeout') || addError?.message?.includes('aborted');
+          
+          if (isAbortError || isTimeout) {
+            console.warn(`⏱️ [CAMPANHA ${campaignId}] Job ${jobNumber}: Request abortado/timeout após ${addDuration}ms. Tentando novamente...`);
+            
+            // Se não for última tentativa, faz retry com delay maior
+            if (attempts < maxAttempts) {
+              const waitMs = Math.max(getDelay() || 3000, 3000); // Delay maior para timeout
+              console.log(`⚠️ [CAMPANHA ${campaignId}] Job ${jobNumber}: Timeout/Abort. Retentando em ${(waitMs / 1000).toFixed(1)}s (tentativa ${attempts}/${maxAttempts})`);
+              await new Promise(resolve => setTimeout(resolve, waitMs));
+              continue; // Tenta novamente
+            } else {
+              // Última tentativa falhou por timeout
+              failed++;
+              console.error(`❌ [CAMPANHA ${campaignId}] Job ${jobNumber}: Timeout após ${maxAttempts} tentativas. Telefone: ${normalizedPhone}`);
+              await rateLimitService.recordLeadUsage(campaignId, 1, false);
+              await supabaseServiceRole
+                .from('searches')
+                .update({
+                  status: 'erro',
+                  updated_at: new Date().toISOString(),
+                })
+                .eq('id', job.contactId);
+              break; // Não tenta mais
+            }
+          } else {
+            // Outros erros: se não for última tentativa, faz retry
+            if (attempts < maxAttempts) {
+              const waitMs = Math.max(getDelay() || 2000, 2000);
+              console.log(`⚠️ [CAMPANHA ${campaignId}] Job ${jobNumber}: Exceção. Retentando em ${(waitMs / 1000).toFixed(1)}s (tentativa ${attempts}/${maxAttempts})`);
+              await new Promise(resolve => setTimeout(resolve, waitMs));
+              continue; // Tenta novamente
+            }
           }
           
           // Última tentativa falhou
