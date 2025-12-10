@@ -11,88 +11,81 @@ interface ActiveCampaignsProps {
   onDelete?: (campaignId: string) => void;
 }
 
-const ActiveCampaigns: React.FC<ActiveCampaignsProps> = ({
-  campaigns,
+// Componente separado para cada campanha (permite usar hooks)
+interface CampaignCardProps {
+  campaign: Campaign;
+  showActions: boolean;
+  onPause?: (campaignId: string) => void;
+  onResume?: (campaignId: string) => void;
+  onDelete?: (campaignId: string) => void;
+}
+
+const CampaignCard: React.FC<CampaignCardProps> = ({
+  campaign,
+  showActions,
   onPause,
   onResume,
   onDelete,
 }) => {
-  const [showHistory, setShowHistory] = useState(false);
-
-  const activeCampaigns = campaigns.filter(
-    c => c.status === 'running' || c.status === 'paused' || c.status === 'pending'
-  );
-
-  const completedCampaigns = campaigns.filter(
-    c => c.status === 'completed' || c.status === 'failed'
-  ).sort((a, b) => {
-    // Ordena por data de conclusão (completed_at) ou created_at se não tiver completed_at
-    const dateA = a.completed_at ? new Date(a.completed_at).getTime() : new Date(a.created_at).getTime();
-    const dateB = b.completed_at ? new Date(b.completed_at).getTime() : new Date(b.created_at).getTime();
-    return dateB - dateA; // Mais recentes primeiro
-  });
-
-  const renderCampaign = (campaign: Campaign, showActions: boolean = true) => {
-    const total = campaign.total_contacts || 1;
-    const processed = campaign.processed_contacts || 0;
-    const failed = campaign.failed_contacts || 0;
-    const completed = processed + failed;
-    const progressPercentage = Math.round((completed / total) * 100);
-    const successPercentage = completed > 0 ? Math.round((processed / completed) * 100) : 0;
-    const failedPercentage = completed > 0 ? Math.round((failed / completed) * 100) : 0;
-    const isPaused = campaign.status === 'paused';
-    const isCompleted = campaign.status === 'completed';
-    const isFailed = campaign.status === 'failed';
-    const isPending = campaign.status === 'pending';
-    const isRunning = campaign.status === 'running';
+  const total = campaign.total_contacts || 1;
+  const processed = campaign.processed_contacts || 0;
+  const failed = campaign.failed_contacts || 0;
+  const completed = processed + failed;
+  const progressPercentage = Math.round((completed / total) * 100);
+  const successPercentage = completed > 0 ? Math.round((processed / completed) * 100) : 0;
+  const failedPercentage = completed > 0 ? Math.round((failed / completed) * 100) : 0;
+  const isPaused = campaign.status === 'paused';
+  const isCompleted = campaign.status === 'completed';
+  const isFailed = campaign.status === 'failed';
+  const isPending = campaign.status === 'pending';
+  const isRunning = campaign.status === 'running';
+  
+  // Timer para próximo request (hooks agora estão no nível do componente)
+  const [timeRemaining, setTimeRemaining] = useState<string>('');
+  
+  useEffect(() => {
+    if (!isRunning || isPaused || !campaign.next_request_at) {
+      setTimeRemaining('');
+      return;
+    }
     
-    // Timer para próximo request
-    const [timeRemaining, setTimeRemaining] = useState<string>('');
-    
-    useEffect(() => {
-      if (!isRunning || isPaused || !campaign.next_request_at) {
+    const updateTimer = () => {
+      const now = new Date().getTime();
+      const nextRequest = new Date(campaign.next_request_at!).getTime();
+      const diff = nextRequest - now;
+      
+      if (diff <= 0) {
         setTimeRemaining('');
         return;
       }
       
-      const updateTimer = () => {
-        const now = new Date().getTime();
-        const nextRequest = new Date(campaign.next_request_at!).getTime();
-        const diff = nextRequest - now;
-        
-        if (diff <= 0) {
-          setTimeRemaining('');
-          return;
-        }
-        
-        const totalSeconds = Math.floor(diff / 1000);
-        const minutes = Math.floor(totalSeconds / 60);
-        const seconds = totalSeconds % 60;
-        
-        if (minutes > 0) {
-          setTimeRemaining(`${minutes}min ${seconds}s`);
-        } else {
-          setTimeRemaining(`${seconds}s`);
-        }
-      };
+      const totalSeconds = Math.floor(diff / 1000);
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
       
-      updateTimer();
-      const interval = setInterval(updateTimer, 1000);
-      
-      return () => clearInterval(interval);
-    }, [campaign.next_request_at, isRunning, isPaused]);
+      if (minutes > 0) {
+        setTimeRemaining(`${minutes}min ${seconds}s`);
+      } else {
+        setTimeRemaining(`${seconds}s`);
+      }
+    };
+    
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    
+    return () => clearInterval(interval);
+  }, [campaign.next_request_at, isRunning, isPaused]);
 
-    return (
-      <div
-        key={campaign.id}
-        className={`p-4 border-2 rounded-lg transition relative ${
-          isFailed
-            ? 'border-red-200 bg-red-50/50'
-            : isCompleted
-            ? 'border-emerald-200 bg-emerald-50/30'
-            : 'border-gray-200 hover:border-emerald-300 bg-white'
-        }`}
-      >
+  return (
+    <div
+      className={`p-4 border-2 rounded-lg transition relative ${
+        isFailed
+          ? 'border-red-200 bg-red-50/50'
+          : isCompleted
+          ? 'border-emerald-200 bg-emerald-50/30'
+          : 'border-gray-200 hover:border-emerald-300 bg-white'
+      }`}
+    >
         {/* Overlay de loading para campanhas pendentes */}
         {isPending && (
           <div className="absolute inset-0 bg-emerald-500/20 backdrop-blur-sm rounded-lg flex items-center justify-center z-10">
@@ -236,8 +229,29 @@ const ActiveCampaigns: React.FC<ActiveCampaignsProps> = ({
           )}
         </div>
       </div>
-    );
-  };
+  );
+};
+
+const ActiveCampaigns: React.FC<ActiveCampaignsProps> = ({
+  campaigns,
+  onPause,
+  onResume,
+  onDelete,
+}) => {
+  const [showHistory, setShowHistory] = useState(false);
+
+  const activeCampaigns = campaigns.filter(
+    c => c.status === 'running' || c.status === 'paused' || c.status === 'pending'
+  );
+
+  const completedCampaigns = campaigns.filter(
+    c => c.status === 'completed' || c.status === 'failed'
+  ).sort((a, b) => {
+    // Ordena por data de conclusão (completed_at) ou created_at se não tiver completed_at
+    const dateA = a.completed_at ? new Date(a.completed_at).getTime() : new Date(a.created_at).getTime();
+    const dateB = b.completed_at ? new Date(b.completed_at).getTime() : new Date(b.created_at).getTime();
+    return dateB - dateA; // Mais recentes primeiro
+  });
 
   return (
     <div className="space-y-6">
@@ -248,7 +262,16 @@ const ActiveCampaigns: React.FC<ActiveCampaignsProps> = ({
           <p className="text-sm text-gray-500 text-center py-4">Nenhuma campanha ativa no momento</p>
         ) : (
           <div className="space-y-4">
-            {activeCampaigns.map(campaign => renderCampaign(campaign, true))}
+            {activeCampaigns.map(campaign => (
+              <CampaignCard
+                key={campaign.id}
+                campaign={campaign}
+                showActions={true}
+                onPause={onPause}
+                onResume={onResume}
+                onDelete={onDelete}
+              />
+            ))}
           </div>
         )}
       </div>
@@ -273,7 +296,16 @@ const ActiveCampaigns: React.FC<ActiveCampaignsProps> = ({
           
           {showHistory && (
             <div className="space-y-4">
-              {completedCampaigns.map(campaign => renderCampaign(campaign, false))}
+              {completedCampaigns.map(campaign => (
+                <CampaignCard
+                  key={campaign.id}
+                  campaign={campaign}
+                  showActions={false}
+                  onPause={onPause}
+                  onResume={onResume}
+                  onDelete={onDelete}
+                />
+              ))}
             </div>
           )}
         </div>
